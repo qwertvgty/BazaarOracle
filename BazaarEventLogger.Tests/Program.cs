@@ -1,11 +1,139 @@
 using System;
 using System.Collections.Generic;
+using System.IO;
+using System.Text.Json;
+using BazaarEventLogger;
 
 namespace BazaarEventLogger.Tests
 {
     internal static class Program
     {
-        private static void Main()
+        private static readonly JsonSerializerOptions JsonOptions = new JsonSerializerOptions
+        {
+            IncludeFields = true,
+            WriteIndented = true,
+            PropertyNameCaseInsensitive = true
+        };
+
+        private static int Main(string[] args)
+        {
+            try
+            {
+                if (args.Length > 0 && string.Equals(args[0], "offline", StringComparison.OrdinalIgnoreCase))
+                {
+                    RunOffline(args);
+                    return 0;
+                }
+
+                RunSmokeTests();
+                Console.WriteLine("Simulation smoke tests passed.");
+                Console.WriteLine("Offline runner: dotnet run --project BazaarEventLogger.Tests -- offline <DebugExportDir> [runs] [seedBase] [traceSamples]");
+                return 0;
+            }
+            catch (Exception ex)
+            {
+                Console.Error.WriteLine(ex);
+                return 1;
+            }
+        }
+
+        private static void RunOffline(IReadOnlyList<string> args)
+        {
+            if (args.Count < 2)
+                throw new InvalidOperationException("Usage: offline <DebugExportDir> [runs] [seedBase] [traceSamples]");
+
+            var exportDir = Path.GetFullPath(args[1]);
+            var playerPath = Path.Combine(exportDir, "player_snapshot.json");
+            var encounterPath = Path.Combine(exportDir, "selected_encounter.json");
+            if (!Directory.Exists(exportDir))
+                throw new DirectoryNotFoundException(exportDir);
+            if (!File.Exists(playerPath))
+                throw new FileNotFoundException("player_snapshot.json not found", playerPath);
+            if (!File.Exists(encounterPath))
+                throw new FileNotFoundException("selected_encounter.json not found", encounterPath);
+
+            var runs = args.Count > 2 && int.TryParse(args[2], out var parsedRuns) ? parsedRuns : 10;
+            var seedBase = args.Count > 3 && int.TryParse(args[3], out var parsedSeed) ? parsedSeed : 1337;
+            var traceSamples = args.Count > 4 && int.TryParse(args[4], out var parsedTrace) ? parsedTrace : 1;
+
+            var player = LoadJson<SimCombatantSnapshot>(playerPath);
+            var selected = LoadJson<OfflineEncounterSelection>(encounterPath);
+            if (player == null)
+                throw new InvalidOperationException("Failed to deserialize player snapshot.");
+            if (selected?.EncounterSnapshot?.Opponent == null)
+                throw new InvalidOperationException("Failed to deserialize selected encounter snapshot.");
+
+            var options = new SimulationBatchOptions
+            {
+                Runs = Math.Max(1, runs),
+                SeedBase = seedBase,
+                TraceSamples = Math.Max(0, traceSamples)
+            };
+
+            var result = SimulationEngine.RunBatch(player, selected.EncounterSnapshot, options);
+            var summary = SimulationReporter.FormatPredictionReport(player, new[] { result });
+            var outputDir = ResolveOutputDirectory(exportDir);
+            Directory.CreateDirectory(outputDir);
+
+            var summaryPath = Path.Combine(outputDir, "offline_summary.txt");
+            File.WriteAllText(summaryPath, summary);
+
+            string tracePath = null;
+            if (result.TraceSample != null)
+            {
+                tracePath = Path.Combine(outputDir, "offline_trace.txt");
+                var traceText = SimulationReporter.FormatSimulationTrace(
+                    selected.EncounterName ?? selected.EncounterSnapshot.EncounterName ?? "Encounter",
+                    result.MonsterName,
+                    result.TraceSample);
+                File.WriteAllText(tracePath, traceText);
+            }
+
+            var resultPath = Path.Combine(outputDir, "offline_result.json");
+            File.WriteAllText(resultPath, JsonSerializer.Serialize(result, JsonOptions));
+
+            Console.WriteLine($"Offline simulation complete: {selected.EncounterName}");
+            Console.WriteLine($"WinRate={result.WinRate:P1} Wins={result.Wins}/{result.Runs} AvgHP={result.AveragePlayerHealthRemaining:F1} Median={result.MedianDurationSeconds:F1}s Verdict={result.Verdict}");
+            Console.WriteLine($"Summary: {summaryPath}");
+            Console.WriteLine($"Result: {resultPath}");
+            if (!string.IsNullOrEmpty(tracePath))
+                Console.WriteLine($"Trace: {tracePath}");
+        }
+
+        private static string ResolveOutputDirectory(string exportDir)
+        {
+            try
+            {
+                var probePath = Path.Combine(exportDir, ".offline_write_test");
+                File.WriteAllText(probePath, "ok");
+                File.Delete(probePath);
+                return exportDir;
+            }
+            catch
+            {
+                var fallbackRoot = Path.Combine(AppContext.BaseDirectory, "offline-output");
+                var exportName = SanitizePathPart(new DirectoryInfo(exportDir).Name);
+                return Path.Combine(fallbackRoot, exportName);
+            }
+        }
+
+        private static string SanitizePathPart(string value)
+        {
+            if (string.IsNullOrWhiteSpace(value))
+                return "offline-run";
+
+            foreach (var invalid in Path.GetInvalidFileNameChars())
+                value = value.Replace(invalid, '_');
+
+            return string.IsNullOrWhiteSpace(value) ? "offline-run" : value;
+        }
+
+        private static T LoadJson<T>(string path)
+        {
+            return JsonSerializer.Deserialize<T>(File.ReadAllText(path), JsonOptions);
+        }
+
+        private static void RunSmokeTests()
         {
             TestDeterministicDamageRace();
             TestBurnPressure();
@@ -14,7 +142,6 @@ namespace BazaarEventLogger.Tests
             TestFreezeStopsCooldownOnly();
             TestAllTargetBuffAppliesToEveryCard();
             TestPlayerAttributeModificationCanStripShield();
-            Console.WriteLine("Simulation smoke tests passed.");
         }
 
         private static void TestDeterministicDamageRace()
@@ -184,6 +311,15 @@ namespace BazaarEventLogger.Tests
         {
             if (!condition)
                 throw new InvalidOperationException(message);
+        }
+
+        private sealed class OfflineEncounterSelection
+        {
+            public string EncounterId { get; set; }
+            public string EncounterName { get; set; }
+            public string MonsterId { get; set; }
+            public string MonsterName { get; set; }
+            public SimEncounterSnapshot EncounterSnapshot { get; set; }
         }
     }
 }

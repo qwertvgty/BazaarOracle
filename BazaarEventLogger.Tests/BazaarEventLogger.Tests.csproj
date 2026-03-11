@@ -9,5 +9,6 @@
   <ItemGroup>
     <Compile Include="..\BazaarEventLogger\SimulationModels.cs" Link="SimulationModels.cs" />
     <Compile Include="..\BazaarEventLogger\SimulationEngine.cs" Link="SimulationEngine.cs" />
+    <Compile Include="..\BazaarEventLogger\SimulationReporter.cs" Link="SimulationReporter.cs" />
   </ItemGroup>
 </Project>
