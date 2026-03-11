@@ -1,0 +1,229 @@
+using System;
+using System.Collections.Generic;
+using System.Linq;
+using BazaarGameShared.Domain.Core.Types;
+using BazaarGameShared.Infra.Messages.GameSimEvents;
+using Newtonsoft.Json.Linq;
+
+namespace BazaarEventLogger
+{
+    public static class SimulationSnapshotBuilder
+    {
+        public static SimCombatantSnapshot BuildPlayerSnapshot(GameSim state)
+        {
+            var snapshot = new SimCombatantSnapshot
+            {
+                Name = "Player",
+                SourceId = "runtime",
+                Health = 300,
+                HealthMax = 300,
+                RageMax = 100,
+                EnragedDurationMax = 5000
+            };
+
+            if (state?.Player?.Attributes != null)
+            {
+                snapshot.HealthMax = GetPlayerAttr(state.Player.Attributes, "HealthMax", 300);
+                snapshot.Health = GetPlayerAttr(state.Player.Attributes, "Health", snapshot.HealthMax);
+                snapshot.Shield = GetPlayerAttr(state.Player.Attributes, "Shield", 0);
+                snapshot.Burn = GetPlayerAttr(state.Player.Attributes, "Burn", 0);
+                snapshot.Poison = GetPlayerAttr(state.Player.Attributes, "Poison", 0);
+                snapshot.HealthRegen = GetPlayerAttr(state.Player.Attributes, "HealthRegen", 0);
+                snapshot.Joy = GetPlayerAttr(state.Player.Attributes, "Joy", 0);
+                snapshot.Rage = GetPlayerAttr(state.Player.Attributes, "Rage", 0);
+                snapshot.RageMax = GetPlayerAttr(state.Player.Attributes, "RageMax", 100);
+                snapshot.EnragedDurationMax = GetPlayerAttr(state.Player.Attributes, "EnragedDurationMax", 5000);
+            }
+
+            if (state?.Cards != null)
+            {
+                foreach (var kvp in state.Cards)
+                {
+                    var card = kvp.Value;
+                    if (card == null ||
+                        card.State != ECardState.Alive ||
+                        card.Placement?.Section != EInventorySection.Hand)
+                    {
+                        continue;
+                    }
+
+                    var cardSnapshot = BuildCardSnapshot(card);
+                    if (cardSnapshot != null)
+                        snapshot.Cards.Add(cardSnapshot);
+                }
+            }
+
+            snapshot.UnsupportedEffects = snapshot.Cards
+                .SelectMany(c => c.UnsupportedEffects)
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToList();
+            return snapshot;
+        }
+
+        public static SimEncounterSnapshot BuildEncounterSnapshot(string encounterId, string encounterName, string monsterId, JToken monsterObj)
+        {
+            var opponent = BuildMonsterSnapshot(monsterId, monsterObj);
+            return new SimEncounterSnapshot
+            {
+                EncounterId = encounterId,
+                EncounterName = encounterName,
+                MonsterId = monsterId,
+                Opponent = opponent
+            };
+        }
+
+        public static SimCombatantSnapshot BuildMonsterSnapshot(string monsterId, JToken monsterObj)
+        {
+            var snapshot = new SimCombatantSnapshot
+            {
+                Name = monsterObj?["internalName"]?.ToString() ?? "Monster",
+                SourceId = monsterId,
+                Health = 300,
+                HealthMax = 300,
+                RageMax = 100,
+                EnragedDurationMax = 5000
+            };
+
+            var attrs = monsterObj?["player"]?["attributes"] as JObject;
+            if (attrs != null)
+            {
+                snapshot.HealthMax = attrs["HealthMax"]?.Value<int>() ?? 300;
+                snapshot.Health = attrs["Health"]?.Value<int>() ?? snapshot.HealthMax;
+                snapshot.Shield = attrs["Shield"]?.Value<int>() ?? 0;
+                snapshot.Burn = attrs["Burn"]?.Value<int>() ?? 0;
+                snapshot.Poison = attrs["Poison"]?.Value<int>() ?? 0;
+                snapshot.HealthRegen = attrs["HealthRegen"]?.Value<int>() ?? 0;
+                snapshot.RageMax = attrs["RageMax"]?.Value<int>() ?? 100;
+                snapshot.EnragedDurationMax = attrs["EnragedDurationMax"]?.Value<int>() ?? 5000;
+            }
+
+            foreach (var cardObj in monsterObj?["cards"] as JArray ?? new JArray())
+            {
+                var cardSnapshot = BuildCardSnapshot(cardObj as JObject);
+                if (cardSnapshot != null)
+                    snapshot.Cards.Add(cardSnapshot);
+            }
+
+            foreach (var cardObj in monsterObj?["skills"] as JArray ?? new JArray())
+            {
+                var cardSnapshot = BuildCardSnapshot(cardObj as JObject);
+                if (cardSnapshot != null)
+                    snapshot.Cards.Add(cardSnapshot);
+            }
+
+            snapshot.UnsupportedEffects = snapshot.Cards
+                .SelectMany(c => c.UnsupportedEffects)
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToList();
+            return snapshot;
+        }
+
+        private static SimCardSnapshot BuildCardSnapshot(SimUpdateCard card)
+        {
+            var runtimeAttrs = GetRuntimeCardAttributes(card);
+            var info = CardDatabase.GetInfo(card.InstanceId);
+            var tier = card.Tier?.ToString() ?? info?.StartingTier ?? "Bronze";
+            var profile = EffectNormalizer.NormalizeCard(info, tier, runtimeAttrs);
+
+            var snapshot = new SimCardSnapshot
+            {
+                Name = CardDatabase.ResolveName(card.InstanceId),
+                InstanceId = card.InstanceId,
+                TemplateId = info?.Id ?? card.InstanceId,
+                Tier = tier,
+                CooldownMax = profile?.CooldownMax ?? GetRuntimeAttr(runtimeAttrs, "CooldownMax"),
+                Multicast = profile?.Multicast ?? Math.Max(1, GetRuntimeAttr(runtimeAttrs, "Multicast", 1)),
+                Attributes = profile?.Attributes ?? runtimeAttrs,
+                Effects = profile?.Effects ?? new List<SimEffectSpec>(),
+                UnsupportedEffects = profile?.UnsupportedEffects ?? new List<string>(),
+                CoverageScore = profile?.CoverageScore ?? 0.25
+            };
+
+            if (snapshot.CooldownMax <= 0)
+                return null;
+
+            snapshot.CurrentCooldown = snapshot.CooldownMax;
+            if (snapshot.Effects.Count == 0)
+                snapshot.UnsupportedEffects.Add("runtime:no_effects");
+
+            return snapshot;
+        }
+
+        private static SimCardSnapshot BuildCardSnapshot(JObject cardObj)
+        {
+            if (cardObj == null)
+                return null;
+
+            var snapshot = new SimCardSnapshot
+            {
+                Name = cardObj["name"]?.ToString() ?? "?",
+                TemplateId = cardObj["templateId"]?.ToString() ?? "",
+                Tier = cardObj["tier"]?.ToString() ?? "Bronze",
+                CooldownMax = cardObj["cooldownMax"]?.Value<int>() ?? 0,
+                Multicast = Math.Max(1, cardObj["multicast"]?.Value<int>() ?? 1),
+                Attributes = (cardObj["attributes"] as JObject ?? new JObject())
+                    .Properties()
+                    .Where(p => int.TryParse(p.Value.ToString(), out _))
+                    .ToDictionary(p => p.Name, p => int.Parse(p.Value.ToString()), StringComparer.OrdinalIgnoreCase),
+                CoverageScore = cardObj["coverageScore"]?.Value<double?>() ?? 0.75
+            };
+
+            foreach (var effectObj in cardObj["effects"] as JArray ?? new JArray())
+            {
+                var effect = new SimEffectSpec
+                {
+                    Type = effectObj["type"]?.ToString() ?? "unknown",
+                    Value = effectObj["value"]?.Value<int?>() ?? 0,
+                    Target = effectObj["target"]?.ToString() ?? "opponent",
+                    IsPassive = effectObj["passive"]?.Value<bool>() ?? false,
+                    Source = effectObj["source"]?.ToString() ?? "export"
+                };
+
+                if (effect.Value > 0 || effect.IsPassive)
+                    snapshot.Effects.Add(effect);
+            }
+
+            snapshot.UnsupportedEffects = (cardObj["unsupportedEffects"] as JArray ?? new JArray())
+                .Values<string>()
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToList();
+
+            if (snapshot.CooldownMax <= 0)
+                return null;
+
+            snapshot.CurrentCooldown = snapshot.CooldownMax;
+            return snapshot;
+        }
+
+        private static Dictionary<string, int> GetRuntimeCardAttributes(SimUpdateCard card)
+        {
+            var attrs = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+            if (card?.Attributes == null)
+                return attrs;
+
+            foreach (var attr in card.Attributes)
+            {
+                if (attr.Value.DeltaType == EAttributeDeltaType.Update)
+                    attrs[attr.Key.ToString()] = attr.Value.Value;
+            }
+
+            return attrs;
+        }
+
+        private static int GetPlayerAttr(Dictionary<EPlayerAttributeType, int> attrs, string attrName, int defaultValue)
+        {
+            foreach (var attr in attrs)
+            {
+                if (attr.Key.ToString() == attrName)
+                    return attr.Value;
+            }
+
+            return defaultValue;
+        }
+
+        private static int GetRuntimeAttr(IDictionary<string, int> attrs, string key, int defaultValue = 0)
+        {
+            return attrs != null && attrs.TryGetValue(key, out var value) ? value : defaultValue;
+        }
+    }
+}

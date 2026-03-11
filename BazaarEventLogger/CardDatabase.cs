@@ -52,7 +52,8 @@ namespace BazaarEventLogger
                             Type = card["Type"]?.ToString() ?? card["$type"]?.ToString() ?? "?",
                             StartingTier = card["StartingTier"]?.ToString() ?? "?",
                             Size = card["Size"]?.ToString() ?? "?",
-                            Heroes = card["Heroes"]?.ToObject<List<string>>() ?? new List<string>()
+                            Heroes = card["Heroes"]?.ToObject<List<string>>() ?? new List<string>(),
+                            RawTemplate = card as JObject
                         };
 
                         // Extract base tier attributes (Bronze by default)
@@ -176,7 +177,49 @@ namespace BazaarEventLogger
         public List<string> Heroes = new List<string>();
         public Dictionary<string, Dictionary<string, string>> TierAttributes = new Dictionary<string, Dictionary<string, string>>();
         public Dictionary<string, string> AbilityDescriptions = new Dictionary<string, string>();
+        public JObject RawTemplate;
 
         public override string ToString() => $"{InternalName} ({Type}, {StartingTier})";
+
+        public Dictionary<string, int> GetMergedTierAttributes(string tierName, IDictionary<string, int> runtimeAttributes = null)
+        {
+            var merged = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+            foreach (var tier in GetTierInheritanceOrder(tierName))
+            {
+                if (!TierAttributes.TryGetValue(tier, out var attrs))
+                    continue;
+
+                foreach (var attr in attrs)
+                {
+                    if (int.TryParse(attr.Value, out var parsed))
+                        merged[attr.Key] = parsed;
+                }
+            }
+
+            if (runtimeAttributes != null)
+            {
+                foreach (var attr in runtimeAttributes)
+                    merged[attr.Key] = attr.Value;
+            }
+
+            return merged;
+        }
+
+        private static IEnumerable<string> GetTierInheritanceOrder(string tierName)
+        {
+            var order = new[] { "Bronze", "Silver", "Gold", "Diamond", "Legendary" };
+            var result = new List<string>();
+            foreach (var tier in order)
+            {
+                result.Add(tier);
+                if (string.Equals(tier, tierName, StringComparison.OrdinalIgnoreCase))
+                    break;
+            }
+
+            if (result.Count == 0)
+                result.Add("Bronze");
+
+            return result;
+        }
     }
 }

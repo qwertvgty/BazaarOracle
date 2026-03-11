@@ -186,8 +186,23 @@ namespace BazaarEventLogger
 
         // Accumulated player state across messages
         private static Dictionary<string, SimUpdateCard> _playerCards = new Dictionary<string, SimUpdateCard>();
+        private static Dictionary<string, SimUpdateCard> _opponentCards = new Dictionary<string, SimUpdateCard>();
         private static SimUpdatePlayer _playerState;
         private static SimUpdateRun _runState;
+        private static string _currentEncounterId;
+        private static string _currentEncounterName;
+
+        private static void UpdateCurrentEncounter(string encounterId)
+        {
+            if (string.IsNullOrEmpty(encounterId))
+                return;
+
+            if (!string.Equals(_currentEncounterId, encounterId, StringComparison.OrdinalIgnoreCase))
+                _opponentCards.Clear();
+
+            _currentEncounterId = encounterId;
+            _currentEncounterName = CardDatabase.ResolveName(_currentEncounterId);
+        }
 
         private static void AccumulatePlayerState(GameSim sim)
         {
@@ -198,6 +213,9 @@ namespace BazaarEventLogger
             // Track run state
             if (sim.Run != null)
                 _runState = sim.Run;
+
+            if (!string.IsNullOrEmpty(sim.CurrentState?.CurrentEncounterId))
+                UpdateCurrentEncounter(sim.CurrentState.CurrentEncounterId);
 
             // Accumulate cards - add/update cards, handle disposals
             if (sim.Cards != null)
@@ -213,6 +231,10 @@ namespace BazaarEventLogger
                     {
                         _playerCards[kvp.Key] = card;
                     }
+                    else if (card.Placement?.Owner == BazaarGameShared.Domain.Core.Types.ECombatantId.Opponent)
+                    {
+                        _opponentCards[kvp.Key] = card;
+                    }
                 }
             }
 
@@ -221,8 +243,24 @@ namespace BazaarEventLogger
             {
                 foreach (var evt in sim.Events)
                 {
+                    if (evt is GameSimEventStateTransitioned transitioned && !string.IsNullOrEmpty(transitioned.CurrentEncounterId))
+                    {
+                        UpdateCurrentEncounter(transitioned.CurrentEncounterId);
+                    }
+                    else if (evt is GameSimEventStateResumed resumed && !string.IsNullOrEmpty(resumed.CurrentEncounterId))
+                    {
+                        UpdateCurrentEncounter(resumed.CurrentEncounterId);
+                    }
+                    else if (evt is GameSimEventStateSuspended suspended && !string.IsNullOrEmpty(suspended.CurrentEncounterId))
+                    {
+                        UpdateCurrentEncounter(suspended.CurrentEncounterId);
+                    }
+
                     if (evt is GameSimEventCardDisposed disposed)
+                    {
                         _playerCards.Remove(disposed.InstanceId);
+                        _opponentCards.Remove(disposed.InstanceId);
+                    }
                     else if (evt is GameSimEventCardMoved moved)
                     {
                         // If card moved out of hand, remove from tracking
@@ -230,7 +268,10 @@ namespace BazaarEventLogger
                             _playerCards.Remove(moved.InstanceId);
                     }
                     else if (evt is GameSimEventCardSold sold)
+                    {
                         _playerCards.Remove(sold.InstanceId);
+                        _opponentCards.Remove(sold.InstanceId);
+                    }
                 }
             }
         }
@@ -239,6 +280,7 @@ namespace BazaarEventLogger
         {
             // Always accumulate state
             AccumulatePlayerState(sim);
+            TryLearnEncounterFromObservedOpponent();
 
             // Detect combat selection: state=Choice and SelectionSet contains combat encounter IDs
             if (sim.CurrentState == null) return;
@@ -277,6 +319,26 @@ namespace BazaarEventLogger
             {
                 Plugin.Log?.LogError($"Battle prediction error: {ex}");
             }
+        }
+
+        private static void TryLearnEncounterFromObservedOpponent()
+        {
+            if (string.IsNullOrEmpty(_currentEncounterId) || _opponentCards.Count == 0)
+                return;
+
+            var templateIds = _opponentCards.Values
+                .Where(card => card != null)
+                .Select(card => CardDatabase.GetInfo(card.InstanceId)?.Id)
+                .Where(id => !string.IsNullOrEmpty(id))
+                .ToList();
+
+            if (templateIds.Count == 0)
+                return;
+
+            BattleSimulator.TryLearnEncounterMapping(
+                _currentEncounterId,
+                string.IsNullOrEmpty(_currentEncounterName) ? CardDatabase.ResolveName(_currentEncounterId) : _currentEncounterName,
+                templateIds);
         }
 
         // === Instance tracking ===

@@ -1,6 +1,8 @@
 # Build outputs
 BazaarEventLogger/bin/
 BazaarEventLogger/obj/
+BazaarEventLogger.Tests/bin
+BazaarEventLogger.Tests/obj
 
 # Decompiled game code (copyright)
 BazaarGameShared/
@@ -20,3 +22,6 @@ Thumbs.db
 .DS_Store
 
 .claude/
+
+# py
+*.pyc

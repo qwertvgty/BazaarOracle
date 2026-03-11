@@ -6,12 +6,21 @@ import sqlite3
 import json
 import os
 import re
+from difflib import SequenceMatcher
+from pathlib import Path
 
 GAME_DIR = r"E:\SteamLibrary\steamapps\common\The Bazaar"
 STREAMING = os.path.join(GAME_DIR, "TheBazaar_Data", "StreamingAssets")
 DB_PATH = os.path.join(STREAMING, "GameData.db")
 CARDS_PATH = os.path.join(STREAMING, "cards.json")
 OUTPUT_PATH = os.path.join(STREAMING, "monster_data.json")
+REPO_ROOT = Path(__file__).resolve().parents[2]
+CARDS_FULL_PATH = REPO_ROOT / "BazaarDb" / "cards_full.json"
+
+STOPWORDS = {
+    "monster", "encounter", "event", "the", "elite", "boss",
+    "bronze", "silver", "gold", "diamond", "legendary"
+}
 
 
 def load_cards_json():
@@ -27,12 +36,24 @@ def load_cards_json():
     return cards
 
 
+def load_cards_full_json():
+    """Load BazaarDb cards_full.json if available."""
+    if not CARDS_FULL_PATH.exists():
+        return []
+    with open(CARDS_FULL_PATH, "r", encoding="utf-8") as f:
+        data = json.load(f)
+    return data if isinstance(data, list) else []
+
+
 def extract_card_effects(card_template, tier_name):
     """
     Extract simplified effects from a card template's abilities for a given tier.
-    Returns list of {type, value, target} dicts.
+    Returns dict with effects/unsupported/coverage.
     """
     effects = []
+    unsupported = []
+    total_actions = 0
+    recognized_actions = 0
 
     # Get inherited tier attributes
     attrs = get_inherited_tier_attrs(card_template, tier_name)
@@ -52,9 +73,13 @@ def extract_card_effects(card_template, tier_name):
         if not action:
             continue
 
+        total_actions += 1
         effect = parse_action(action, attrs, card_template)
         if effect:
             effects.append(effect)
+            recognized_actions += 1
+        else:
+            unsupported.append(f"ability:{aid}:{action.get('$type', 'unknown')}")
 
     # Also extract tier-specific aura effects (passive modifiers)
     active_auras = set(tier_data.get("AuraIds", [])) if tier_data else set()
@@ -64,11 +89,20 @@ def extract_card_effects(card_template, tier_name):
             continue
         aura_action = aura.get("Action", {})
         if aura_action:
+            total_actions += 1
             effect = parse_aura_action(aura_action, attrs)
             if effect:
                 effects.append(effect)
+                recognized_actions += 1
+            else:
+                unsupported.append(f"aura:{aura_id}:{aura_action.get('$type', 'unknown')}")
 
-    return effects
+    coverage = (recognized_actions / total_actions) if total_actions else (0.75 if effects else 0.25)
+    return {
+        "effects": effects,
+        "unsupportedEffects": sorted(set(unsupported)),
+        "coverageScore": round(coverage, 3),
+    }
 
 
 def resolve_value(value_obj, attrs):
@@ -224,17 +258,34 @@ def parse_action(action, attrs, card_template=None):
         # Modifies another card's attribute - complex but often used for buffs
         modified_attr = action.get("AttributeType", "")
         value = resolve_value(action.get("Value"), attrs)
-        if modified_attr in ("ShieldApplyAmount", "DamageAmount", "HealAmount", "BurnApplyAmount"):
-            return {"type": f"buff_{modified_attr}", "value": value, "target": "self_card"}
+        target = get_target_mode(action.get("Target")) or "self_card"
+        if modified_attr in (
+            "ShieldApplyAmount", "DamageAmount", "HealAmount", "BurnApplyAmount",
+            "PoisonApplyAmount", "HasteAmount", "SlowAmount", "FreezeAmount"
+        ):
+            return {"type": f"buff_{modified_attr}", "value": value, "target": target}
+        if modified_attr in ("Cooldown", "CooldownMax"):
+            return {"type": f"buff_{modified_attr}", "value": abs(value) if value else 0, "target": target}
         return None  # Skip other card modifications for now
 
-    if atype == "TActionPlayerBurn":
+    if atype in ("TActionPlayerBurn", "TActionPlayerBurnApply"):
         value = resolve_value(action.get("ReferenceValue"), attrs) if action.get("ReferenceValue") else attrs.get("BurnApplyAmount", 0)
-        return {"type": "burn_apply", "value": abs(value) if value else attrs.get("BurnApplyAmount", 1), "target": "opponent"}
+        target = get_target_mode(action.get("Target")) or "opponent"
+        return {"type": "burn_apply", "value": abs(value) if value else attrs.get("BurnApplyAmount", 1), "target": target}
 
     if atype == "TActionPlayerPoison":
         value = resolve_value(action.get("ReferenceValue"), attrs) if action.get("ReferenceValue") else attrs.get("PoisonApplyAmount", 0)
         return {"type": "poison_apply", "value": abs(value) if value else attrs.get("PoisonApplyAmount", 1), "target": "opponent"}
+
+    if atype == "TActionPlayerRegenApply":
+        value = resolve_value(action.get("ReferenceValue"), attrs) if action.get("ReferenceValue") else attrs.get("RegenApplyAmount", 0)
+        target = get_target_mode(action.get("Target")) or "self"
+        return {"type": "regen_apply", "value": abs(value) if value else attrs.get("RegenApplyAmount", 1), "target": target}
+
+    if atype == "TActionPlayerShieldApply":
+        value = resolve_value(action.get("ReferenceValue"), attrs) if action.get("ReferenceValue") else attrs.get("ShieldApplyAmount", 0)
+        target = get_target_mode(action.get("Target")) or "self"
+        return {"type": "shield_apply", "value": abs(value) if value else attrs.get("ShieldApplyAmount", 1), "target": target}
 
     # Composite actions
     if atype in ("TActionComposite", "TActionConditional"):
@@ -251,6 +302,18 @@ def parse_action(action, attrs, card_template=None):
 def parse_aura_action(action, attrs):
     """Parse aura actions (passive effects)."""
     atype = action.get("$type", "")
+    if atype == "TAuraActionCardModifyAttribute":
+        modified_attr = action.get("AttributeType", "")
+        value = resolve_value(action.get("Value"), attrs)
+        target = get_target_mode(action.get("Target")) or "self_card"
+        if modified_attr in (
+            "ShieldApplyAmount", "DamageAmount", "HealAmount", "BurnApplyAmount",
+            "PoisonApplyAmount", "HasteAmount", "SlowAmount", "FreezeAmount",
+            "Cooldown", "CooldownMax"
+        ):
+            return {"type": f"buff_{modified_attr}", "value": abs(value), "target": target, "passive": True}
+        return None
+
     if "ModifyAttribute" in atype:
         attr_type = action.get("AttributeType", "")
         return {"type": f"aura_{attr_type}", "value": resolve_value(action.get("Value"), attrs), "target": get_target_mode(action.get("Target")), "passive": True}
@@ -287,6 +350,8 @@ def resolve_card_for_monster(template_id, tier, cards_db):
     # Get inherited tier attributes (Bronze -> Silver -> Gold -> ...)
     tier_attrs = get_inherited_tier_attrs(card, tier)
 
+    normalized = extract_card_effects(card, tier)
+
     result = {
         "templateId": template_id,
         "name": name,
@@ -294,15 +359,78 @@ def resolve_card_for_monster(template_id, tier, cards_db):
         "cooldownMax": tier_attrs.get("CooldownMax", 0),
         "multicast": tier_attrs.get("Multicast", 1),
         "attributes": tier_attrs,
-        "effects": extract_card_effects(card, tier)
+        "effects": normalized["effects"],
+        "unsupportedEffects": normalized["unsupportedEffects"],
+        "coverageScore": normalized["coverageScore"],
     }
 
     return result
 
 
+def resolve_card_from_bazaardb(entry, cards_db):
+    """Resolve BazaarDb board/skill entry into simulation-ready card data."""
+    template_id = entry.get("baseId", "")
+    tier = entry.get("tierOverride", "Bronze")
+    card_data = resolve_card_for_monster(template_id, tier, cards_db)
+    if not card_data:
+        return None
+    return card_data
+
+
+def build_monsters_from_bazaardb(cards_full, cards_db):
+    """Build encounter-specific monster snapshots from BazaarDb metadata."""
+    monsters = {}
+    encounter_map = {}
+
+    for card in cards_full:
+        if card.get("Type") != "CombatEncounter":
+            continue
+
+        meta = card.get("MonsterMetadata") or {}
+        board = meta.get("board") or []
+        skills = meta.get("skills") or []
+        if not board and not skills:
+            continue
+
+        encounter_id = card.get("Id")
+        if not encounter_id:
+            continue
+
+        resolved_board = []
+        for item in board:
+            card_data = resolve_card_from_bazaardb(item, cards_db)
+            if card_data:
+                resolved_board.append(card_data)
+
+        resolved_skills = []
+        for item in skills:
+            skill_data = resolve_card_from_bazaardb(item, cards_db)
+            if skill_data:
+                resolved_skills.append(skill_data)
+
+        monsters[encounter_id] = {
+            "id": encounter_id,
+            "internalName": (card.get("Title") or {}).get("Text") or card.get("_originalTitleText") or card.get("Id"),
+            "source": "bazaardb",
+            "player": {
+                "attributes": {
+                    "HealthMax": meta.get("health", 300),
+                    "Health": meta.get("health", 300),
+                },
+                "unlockedSlots": len(resolved_board),
+            },
+            "cards": resolved_board,
+            "skills": resolved_skills,
+        }
+        encounter_map[encounter_id] = encounter_id
+
+    return monsters, encounter_map
+
+
 def build_encounter_to_monster_map(cards_db, monsters):
     """Build a mapping from encounter template ID to monster template."""
     encounter_map = {}
+    unmatched = {}
 
     # Get all combat encounters
     encounters = {}
@@ -312,14 +440,22 @@ def build_encounter_to_monster_map(cards_db, monsters):
 
     # Build monster name lookup
     monster_by_name = {}
+    monster_norms = {}
     for mid, mdata in monsters.items():
         name = mdata.get("internalName", mdata.get("InternalName", ""))
         if name:
             monster_by_name[name.lower()] = mid
+            monster_norms[mid] = {
+                "name": name,
+                "normalized": normalize_name(name),
+                "tokens": normalize_tokens(name),
+            }
 
     for enc_id, enc in encounters.items():
         enc_name = enc.get("InternalName", "")
         enc_id_upper = enc["Id"]
+        enc_norm = normalize_name(enc_name)
+        enc_tokens = normalize_tokens(enc_name)
 
         # Try exact match
         if enc_name.lower() in monster_by_name:
@@ -343,13 +479,68 @@ def build_encounter_to_monster_map(cards_db, monsters):
                 encounter_map[enc_id_upper] = mid
                 break
 
-    return encounter_map
+        if enc_id_upper in encounter_map:
+            continue
+
+        best_mid = None
+        best_score = 0.0
+        for mid, meta in monster_norms.items():
+            score = similarity_score(enc_norm, enc_tokens, meta["normalized"], meta["tokens"])
+            if score > best_score:
+                best_score = score
+                best_mid = mid
+
+        if best_mid and best_score >= 0.72:
+            encounter_map[enc_id_upper] = best_mid
+        else:
+            unmatched[enc_id_upper] = {
+                "encounterName": enc_name,
+                "normalized": enc_norm,
+                "bestMonsterId": best_mid,
+                "bestMonsterName": monster_norms.get(best_mid, {}).get("name"),
+                "bestScore": round(best_score, 3),
+            }
+
+    return encounter_map, unmatched
+
+
+def normalize_name(name):
+    text = (name or "").lower()
+    text = re.sub(r'\s*\((?:bronze|silver|gold|diamond|legendary)\)\s*$', '', text)
+    text = text.replace("&", " and ")
+    text = re.sub(r'[^a-z0-9\s]', ' ', text)
+    parts = [p for p in text.split() if p and p not in STOPWORDS]
+    return " ".join(parts)
+
+
+def normalize_tokens(name):
+    return set(normalize_name(name).split())
+
+
+def similarity_score(a_norm, a_tokens, b_norm, b_tokens):
+    if not a_norm or not b_norm:
+        return 0.0
+
+    if a_norm == b_norm:
+        return 1.0
+
+    seq = SequenceMatcher(None, a_norm, b_norm).ratio()
+    overlap = len(a_tokens & b_tokens) / max(1, len(a_tokens | b_tokens))
+    subset_bonus = 0.0
+    if a_tokens and b_tokens and (a_tokens <= b_tokens or b_tokens <= a_tokens):
+        subset_bonus = 0.15
+
+    return max(seq, overlap, min(1.0, seq * 0.7 + overlap * 0.3 + subset_bonus))
 
 
 def main():
     print("Loading cards.json...")
     cards_db = load_cards_json()
     print(f"  Loaded {len(cards_db)} card templates")
+
+    print("Loading BazaarDb cards_full.json...")
+    cards_full = load_cards_full_json()
+    print(f"  Loaded {len(cards_full)} BazaarDb card records")
 
     print("Loading PlayerMonsterTemplates from GameData.db...")
     conn = sqlite3.connect(DB_PATH)
@@ -396,14 +587,24 @@ def main():
     conn.close()
     print(f"  Loaded {len(monsters)} monster templates")
 
+    print("Building encounter-specific monsters from BazaarDb metadata...")
+    bazaardb_monsters, bazaardb_map = build_monsters_from_bazaardb(cards_full, cards_db)
+    monsters.update(bazaardb_monsters)
+    print(f"  Built {len(bazaardb_monsters)} encounter-specific monster snapshots")
+
     # Build encounter mapping
-    encounter_map = build_encounter_to_monster_map(cards_db, monsters)
+    encounter_map, unmatched_encounters = build_encounter_to_monster_map(cards_db, monsters)
+    encounter_map.update(bazaardb_map)
+    for encounter_id in bazaardb_map:
+        unmatched_encounters.pop(encounter_id, None)
     print(f"  Matched {len(encounter_map)} encounters to monster templates")
+    print(f"  Unmatched encounters: {len(unmatched_encounters)}")
 
     # Output
     output = {
-        "version": "1.0",
+        "version": "2.0",
         "encounterToMonster": encounter_map,
+        "unmatchedEncounters": unmatched_encounters,
         "monsters": monsters
     }
 
