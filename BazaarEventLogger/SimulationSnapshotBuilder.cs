@@ -40,14 +40,18 @@ namespace BazaarEventLogger
                 foreach (var kvp in state.Cards)
                 {
                     var card = kvp.Value;
+                    var info = CardDatabase.GetInfo(card.InstanceId);
+                    var type = info?.Type ?? "";
+                    var isTriggeredSupport = string.Equals(type, "Skill", StringComparison.OrdinalIgnoreCase) ||
+                                             string.Equals(type, "PlayerEffect", StringComparison.OrdinalIgnoreCase);
                     if (card == null ||
                         card.State != ECardState.Alive ||
-                        card.Placement?.Section != EInventorySection.Hand)
+                        (!isTriggeredSupport && card.Placement?.Section != EInventorySection.Hand))
                     {
                         continue;
                     }
 
-                    var cardSnapshot = BuildCardSnapshot(card);
+                    var cardSnapshot = BuildCardSnapshot(card, info);
                     if (cardSnapshot != null)
                         snapshot.Cards.Add(cardSnapshot);
                 }
@@ -118,10 +122,10 @@ namespace BazaarEventLogger
             return snapshot;
         }
 
-        private static SimCardSnapshot BuildCardSnapshot(SimUpdateCard card)
+        private static SimCardSnapshot BuildCardSnapshot(SimUpdateCard card, CardInfo info = null)
         {
             var runtimeAttrs = GetRuntimeCardAttributes(card);
-            var info = CardDatabase.GetInfo(card.InstanceId);
+            info = info ?? CardDatabase.GetInfo(card.InstanceId);
             var tier = card.Tier?.ToString() ?? info?.StartingTier ?? "Bronze";
             var profile = EffectNormalizer.NormalizeCard(info, tier, runtimeAttrs);
 
@@ -131,6 +135,7 @@ namespace BazaarEventLogger
                 InstanceId = card.InstanceId,
                 TemplateId = info?.Id ?? card.InstanceId,
                 Tier = tier,
+                Size = info?.Size ?? "",
                 CooldownMax = profile?.CooldownMax ?? GetRuntimeAttr(runtimeAttrs, "CooldownMax"),
                 Multicast = profile?.Multicast ?? Math.Max(1, GetRuntimeAttr(runtimeAttrs, "Multicast", 1)),
                 Attributes = profile?.Attributes ?? runtimeAttrs,
@@ -139,10 +144,11 @@ namespace BazaarEventLogger
                 CoverageScore = profile?.CoverageScore ?? 0.25
             };
 
-            if (snapshot.CooldownMax <= 0)
+            var hasActiveCooldownEffect = snapshot.Effects.Any(effect => effect.Trigger == SimEffectTriggers.OnCardFired);
+            if (snapshot.CooldownMax <= 0 && !hasActiveCooldownEffect && snapshot.Effects.Count == 0)
                 return null;
 
-            snapshot.CurrentCooldown = snapshot.CooldownMax;
+            snapshot.CurrentCooldown = Math.Max(0, snapshot.CooldownMax);
             if (snapshot.Effects.Count == 0)
                 snapshot.UnsupportedEffects.Add("runtime:no_effects");
 
@@ -159,6 +165,7 @@ namespace BazaarEventLogger
                 Name = cardObj["name"]?.ToString() ?? "?",
                 TemplateId = cardObj["templateId"]?.ToString() ?? "",
                 Tier = cardObj["tier"]?.ToString() ?? "Bronze",
+                Size = cardObj["size"]?.ToString() ?? "",
                 CooldownMax = cardObj["cooldownMax"]?.Value<int>() ?? 0,
                 Multicast = Math.Max(1, cardObj["multicast"]?.Value<int>() ?? 1),
                 Attributes = (cardObj["attributes"] as JObject ?? new JObject())
@@ -179,7 +186,10 @@ namespace BazaarEventLogger
                     Source = effectObj["source"]?.ToString() ?? "export",
                     Trigger = effectObj["trigger"]?.ToString() ?? (effectObj["passive"]?.Value<bool>() ?? false ? SimEffectTriggers.Passive : SimEffectTriggers.OnCardFired),
                     RequiresOwnerEnraged = effectObj["requiresOwnerEnraged"]?.Value<bool>() ?? false,
-                    RequiresOwnerNotEnraged = effectObj["requiresOwnerNotEnraged"]?.Value<bool>() ?? false
+                    RequiresOwnerNotEnraged = effectObj["requiresOwnerNotEnraged"]?.Value<bool>() ?? false,
+                    TriggerCardSizes = (effectObj["triggerCardSizes"] as JArray ?? new JArray()).Values<string>().ToList(),
+                    RequiresSourceAttributeZero = effectObj["requiresSourceAttributeZero"]?.ToString(),
+                    RequiresOwnerHealthBelowRatio = effectObj["requiresOwnerHealthBelowRatio"]?.Value<double?>()
                 };
 
                 if (effect.Value > 0 || effect.IsPassive)
@@ -191,10 +201,11 @@ namespace BazaarEventLogger
                 .Distinct(StringComparer.OrdinalIgnoreCase)
                 .ToList();
 
-            if (snapshot.CooldownMax <= 0)
+            var hasActiveCooldownEffect = snapshot.Effects.Any(effect => effect.Trigger == SimEffectTriggers.OnCardFired);
+            if (snapshot.CooldownMax <= 0 && !hasActiveCooldownEffect && snapshot.Effects.Count == 0)
                 return null;
 
-            snapshot.CurrentCooldown = snapshot.CooldownMax;
+            snapshot.CurrentCooldown = Math.Max(0, snapshot.CooldownMax);
             return snapshot;
         }
 

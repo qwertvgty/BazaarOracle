@@ -81,11 +81,11 @@ namespace BazaarEventLogger
 
                 AdvanceEnrageState(player, opponent, rng, events, "Player");
                 AdvanceEnrageState(opponent, player, rng, events, "Opponent");
-                ProcessDot(player, events, "Player");
-                ProcessDot(opponent, events, "Opponent");
+                ProcessDot(player, opponent, rng, events, "Player");
+                ProcessDot(opponent, player, rng, events, "Opponent");
                 ProcessRegeneration(player, timeMs, events, "Player");
                 ProcessRegeneration(opponent, timeMs, events, "Opponent");
-                ProcessSandstorm(player, opponent, timeMs, events);
+                ProcessSandstorm(player, opponent, rng, timeMs, events);
 
                 if (player.Health <= 0 || opponent.Health <= 0)
                 {
@@ -116,6 +116,9 @@ namespace BazaarEventLogger
         {
             foreach (var card in owner.Cards)
             {
+                if (card.CooldownMax <= 0)
+                    continue;
+
                 AdvanceCardTimers(card);
                 AdvanceCooldown(owner, card);
                 if (card.CurrentCooldown > 0)
@@ -128,6 +131,8 @@ namespace BazaarEventLogger
 
                 for (var i = 0; i < castCount; i++)
                     ExecuteCard(card, owner, target, rng, events, ownerLabel, i);
+
+                TriggerItemUsedEffects(owner, target, card, rng, events, ownerLabel);
 
                 card.CurrentCooldown = card.CooldownMax;
                 events?.Add($"{ownerLabel}:reset_cd:{card.Name}={card.CooldownMax}");
@@ -145,7 +150,7 @@ namespace BazaarEventLogger
         {
             foreach (var effect in card.Effects.Where(e => !e.IsPassive && e.Trigger == SimEffectTriggers.OnCardFired).ToList())
             {
-                if (!ShouldActivateEffect(effect, owner))
+                if (!ShouldActivateEffect(effect, owner, card))
                     continue;
 
                 ApplyEffect(effect, owner, target, rng, card, events, ownerLabel, multicastIndex);
@@ -158,7 +163,7 @@ namespace BazaarEventLogger
             {
                 foreach (var effect in card.Effects.Where(e => e.IsPassive && e.Trigger == SimEffectTriggers.Passive).ToList())
                 {
-                    if (!ShouldActivateEffect(effect, owner))
+                    if (!ShouldActivateEffect(effect, owner, card))
                         continue;
 
                     ApplyEffect(effect, owner, target, rng, card);
@@ -186,6 +191,7 @@ namespace BazaarEventLogger
                     foreach (var combatant in targetCombatants)
                     {
                         ApplyDamage(combatant, effect.Value);
+                        TriggerHealthLossEffectsIfNeeded(combatant, ReferenceEquals(combatant, owner) ? target : owner, rng, events, combatant.Name);
                         events?.Add($"{effectLabel}:{combatant.Name}:hp={combatant.Health}:shield={combatant.Shield}");
                     }
                     break;
@@ -222,6 +228,24 @@ namespace BazaarEventLogger
                     foreach (var combatant in targetCombatants)
                     {
                         combatant.Poison += effect.Value;
+                        events?.Add($"{effectLabel}:{combatant.Name}:poison={combatant.Poison}");
+                    }
+                    break;
+
+                case "burn_remove":
+                    foreach (var combatant in targetCombatants)
+                    {
+                        var removeAmount = effect.Value > 0 ? effect.Value : (int)Math.Round(combatant.Burn * 0.5, MidpointRounding.AwayFromZero);
+                        combatant.Burn = Math.Max(0, combatant.Burn - removeAmount);
+                        events?.Add($"{effectLabel}:{combatant.Name}:burn={combatant.Burn}");
+                    }
+                    break;
+
+                case "poison_remove":
+                    foreach (var combatant in targetCombatants)
+                    {
+                        var removeAmount = effect.Value > 0 ? effect.Value : (int)Math.Round(combatant.Poison * 0.5, MidpointRounding.AwayFromZero);
+                        combatant.Poison = Math.Max(0, combatant.Poison - removeAmount);
                         events?.Add($"{effectLabel}:{combatant.Name}:poison={combatant.Poison}");
                     }
                     break;
@@ -277,6 +301,16 @@ namespace BazaarEventLogger
 
                 case "freeze":
                     FreezeRandomCard(ResolveCardTargets(owner, target, sourceCard, effect.Target), effect.Value, rng, effect.Target);
+                    events?.Add(effectLabel);
+                    break;
+
+                case "clear_freeze":
+                    ClearCardStatus(ResolveCardTargets(owner, target, sourceCard, effect.Target), clearFreeze: true, clearSlow: false);
+                    events?.Add(effectLabel);
+                    break;
+
+                case "clear_slow":
+                    ClearCardStatus(ResolveCardTargets(owner, target, sourceCard, effect.Target), clearFreeze: false, clearSlow: true);
                     events?.Add(effectLabel);
                     break;
 
@@ -361,7 +395,7 @@ namespace BazaarEventLogger
             }
         }
 
-        private static bool ShouldActivateEffect(SimEffectSpec effect, SimCombatantSnapshot owner)
+        private static bool ShouldActivateEffect(SimEffectSpec effect, SimCombatantSnapshot owner, SimCardSnapshot sourceCard)
         {
             if (effect == null)
                 return false;
@@ -371,6 +405,22 @@ namespace BazaarEventLogger
 
             if (effect.RequiresOwnerNotEnraged && owner.IsEnraged)
                 return false;
+
+            if (!string.IsNullOrEmpty(effect.RequiresSourceAttributeZero))
+            {
+                var currentValue = sourceCard != null && sourceCard.Attributes.TryGetValue(effect.RequiresSourceAttributeZero, out var attrValue)
+                    ? attrValue
+                    : 0;
+                if (currentValue != 0)
+                    return false;
+            }
+
+            if (effect.RequiresOwnerHealthBelowRatio.HasValue)
+            {
+                var threshold = owner.HealthMax * effect.RequiresOwnerHealthBelowRatio.Value;
+                if (!(owner.Health < threshold))
+                    return false;
+            }
 
             return true;
         }
@@ -461,12 +511,62 @@ namespace BazaarEventLogger
             {
                 foreach (var effect in card.Effects.Where(e => !e.IsPassive && e.Trigger == trigger).ToList())
                 {
-                    if (!ShouldActivateEffect(effect, owner))
+                    if (!ShouldActivateEffect(effect, owner, card))
                         continue;
 
                     ApplyEffect(effect, owner, target, rng, card, events, ownerLabel);
                 }
             }
+        }
+
+        private static void TriggerItemUsedEffects(
+            SimCombatantSnapshot owner,
+            SimCombatantSnapshot target,
+            SimCardSnapshot usedCard,
+            Random rng,
+            List<string> events,
+            string ownerLabel)
+        {
+            foreach (var card in owner.Cards)
+            {
+                foreach (var effect in card.Effects.Where(e => !e.IsPassive && e.Trigger == SimEffectTriggers.OnItemUsed).ToList())
+                {
+                    if (!ShouldActivateEffect(effect, owner, card) || !MatchesUsedCardTrigger(effect, usedCard))
+                        continue;
+
+                    ApplyEffect(effect, owner, target, rng, card, events, ownerLabel);
+                }
+            }
+        }
+
+        private static void TriggerHealthLossEffectsIfNeeded(
+            SimCombatantSnapshot damaged,
+            SimCombatantSnapshot opponent,
+            Random rng,
+            List<string> events,
+            string ownerLabel)
+        {
+            if (damaged.Health <= 0)
+                return;
+
+            foreach (var card in damaged.Cards)
+            {
+                foreach (var effect in card.Effects.Where(e => !e.IsPassive && e.Trigger == SimEffectTriggers.OnPlayerHealthLoss).ToList())
+                {
+                    if (!ShouldActivateEffect(effect, damaged, card))
+                        continue;
+
+                    ApplyEffect(effect, damaged, opponent, rng, card, events, ownerLabel);
+                }
+            }
+        }
+
+        private static bool MatchesUsedCardTrigger(SimEffectSpec effect, SimCardSnapshot usedCard)
+        {
+            if (effect.TriggerCardSizes == null || effect.TriggerCardSizes.Count == 0)
+                return true;
+
+            return effect.TriggerCardSizes.Any(size => string.Equals(size, usedCard.Size, StringComparison.OrdinalIgnoreCase));
         }
 
         private static void ClearCombatantItemTempoDebuffs(SimCombatantSnapshot combatant)
@@ -475,6 +575,17 @@ namespace BazaarEventLogger
             {
                 card.SlowDuration = 0;
                 card.Freeze = 0;
+            }
+        }
+
+        private static void ClearCardStatus(IEnumerable<SimCardSnapshot> cards, bool clearFreeze, bool clearSlow)
+        {
+            foreach (var card in cards)
+            {
+                if (clearFreeze)
+                    card.Freeze = 0;
+                if (clearSlow)
+                    card.SlowDuration = 0;
             }
         }
 
@@ -617,12 +728,13 @@ namespace BazaarEventLogger
             ApplyStatusDuration(candidates[rng.Next(candidates.Count)], duration, isHaste);
         }
 
-        private static void ProcessDot(SimCombatantSnapshot target, List<string> events, string label)
+        private static void ProcessDot(SimCombatantSnapshot target, SimCombatantSnapshot opponent, Random rng, List<string> events, string label)
         {
             target.BurnTickProgress += TickMs;
             while (target.Burn > 0 && target.BurnTickProgress >= BurnTickMs)
             {
                 ApplyDamage(target, target.Burn);
+                TriggerHealthLossEffectsIfNeeded(target, opponent, rng, events, label);
                 events?.Add($"{label}:burn_tick:{target.Burn}:hp={target.Health}:shield={target.Shield}");
                 target.Burn -= Math.Max(1, (int)Math.Floor(target.Burn * 0.03));
                 target.Burn = Math.Max(0, target.Burn);
@@ -634,6 +746,7 @@ namespace BazaarEventLogger
             while (target.Poison > 0 && target.PoisonTickProgress >= PoisonTickMs)
             {
                 ApplyDamage(target, target.Poison);
+                TriggerHealthLossEffectsIfNeeded(target, opponent, rng, events, label);
                 events?.Add($"{label}:poison_tick:{target.Poison}:hp={target.Health}:shield={target.Shield}");
                 target.PoisonTickProgress -= PoisonTickMs;
             }
@@ -648,14 +761,16 @@ namespace BazaarEventLogger
             }
         }
 
-        private static void ProcessSandstorm(SimCombatantSnapshot player, SimCombatantSnapshot opponent, int timeMs, List<string> events)
+        private static void ProcessSandstorm(SimCombatantSnapshot player, SimCombatantSnapshot opponent, Random rng, int timeMs, List<string> events)
         {
             if (timeMs < SandstormDamageStartMs || timeMs % 1000 != 0)
                 return;
 
             var sandstormDamage = ((timeMs - SandstormDamageStartMs) / 1000 + 1) * 50;
             ApplyDamage(player, sandstormDamage);
+            TriggerHealthLossEffectsIfNeeded(player, opponent, rng, events, "Player");
             ApplyDamage(opponent, sandstormDamage);
+            TriggerHealthLossEffectsIfNeeded(opponent, player, rng, events, "Opponent");
             events?.Add($"sandstorm:{sandstormDamage}:player_hp={player.Health}:opponent_hp={opponent.Health}");
         }
 
@@ -725,6 +840,7 @@ namespace BazaarEventLogger
                     InstanceId = card.InstanceId,
                     TemplateId = card.TemplateId,
                     Tier = card.Tier,
+                    Size = card.Size,
                     CooldownMax = card.CooldownMax,
                     CurrentCooldown = card.CooldownMax,
                     Multicast = card.Multicast,
@@ -743,7 +859,10 @@ namespace BazaarEventLogger
                         Source = effect.Source,
                         Trigger = effect.Trigger,
                         RequiresOwnerEnraged = effect.RequiresOwnerEnraged,
-                        RequiresOwnerNotEnraged = effect.RequiresOwnerNotEnraged
+                        RequiresOwnerNotEnraged = effect.RequiresOwnerNotEnraged,
+                        TriggerCardSizes = effect.TriggerCardSizes.ToList(),
+                        RequiresSourceAttributeZero = effect.RequiresSourceAttributeZero,
+                        RequiresOwnerHealthBelowRatio = effect.RequiresOwnerHealthBelowRatio
                     }).ToList()
                 }).ToList()
             };

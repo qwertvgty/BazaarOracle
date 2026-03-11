@@ -6,6 +6,8 @@ namespace BazaarEventLogger
     public static class SimEffectTriggers
     {
         public const string OnCardFired = "on_card_fired";
+        public const string OnItemUsed = "on_item_used";
+        public const string OnPlayerHealthLoss = "on_player_health_loss";
         public const string OnPlayerEnraged = "on_player_enraged";
         public const string OnPlayerEnrageEnded = "on_player_enrage_ended";
         public const string Passive = "passive";
@@ -31,6 +33,9 @@ namespace BazaarEventLogger
         public string Trigger = SimEffectTriggers.OnCardFired;
         public bool RequiresOwnerEnraged;
         public bool RequiresOwnerNotEnraged;
+        public List<string> TriggerCardSizes = new List<string>();
+        public string RequiresSourceAttributeZero;
+        public double? RequiresOwnerHealthBelowRatio;
 
         public override string ToString() => $"{Type}:{Value}->{Target}";
     }
@@ -41,6 +46,7 @@ namespace BazaarEventLogger
         public string InstanceId;
         public string TemplateId;
         public string Tier;
+        public string Size;
         public int CooldownMax;
         public int CurrentCooldown;
         public int Multicast;
@@ -129,6 +135,7 @@ namespace BazaarEventLogger
         public string Name;
         public string TemplateId;
         public string Tier;
+        public string Size;
         public int CooldownMax;
         public int Multicast;
         public Dictionary<string, int> Attributes = new Dictionary<string, int>();

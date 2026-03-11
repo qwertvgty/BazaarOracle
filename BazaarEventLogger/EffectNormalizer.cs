@@ -12,6 +12,9 @@ namespace BazaarEventLogger
             public string Trigger = SimEffectTriggers.OnCardFired;
             public bool RequiresOwnerEnraged;
             public bool RequiresOwnerNotEnraged;
+            public List<string> TriggerCardSizes = new List<string>();
+            public string RequiresSourceAttributeZero;
+            public double? RequiresOwnerHealthBelowRatio;
         }
 
         public static NormalizedCardProfile NormalizeCard(CardInfo info, string tierName, IDictionary<string, int> runtimeAttributes = null)
@@ -26,6 +29,7 @@ namespace BazaarEventLogger
                 Name = info.InternalName,
                 TemplateId = info.Id,
                 Tier = tier,
+                Size = info.Size,
                 CooldownMax = GetValue(attrs, "CooldownMax"),
                 Multicast = Math.Max(1, GetValue(attrs, "Multicast", 1)),
                 Attributes = attrs
@@ -161,10 +165,18 @@ namespace BazaarEventLogger
                     AddEffect(effects, "burn_apply", Math.Abs(ResolveActionValue(action, attrs, "BurnApplyAmount")), GetTargetMode(action["Target"] as JObject), actionType);
                     return ApplyMetadata(effects, metadata);
 
+                case "TActionPlayerBurnRemove":
+                    AddEffect(effects, "burn_remove", Math.Abs(ResolveActionValue(action, attrs, "BurnRemoveAmount")), GetTargetMode(action["Target"] as JObject, "self"), actionType);
+                    return ApplyMetadata(effects, metadata);
+
                 case "TActionPlayerPoison":
                 case "TActionPlayerPoisonApply":
                 case "TActionCardPoison":
                     AddEffect(effects, "poison_apply", Math.Abs(ResolveActionValue(action, attrs, "PoisonApplyAmount")), GetTargetMode(action["Target"] as JObject), actionType);
+                    return ApplyMetadata(effects, metadata);
+
+                case "TActionPlayerPoisonRemove":
+                    AddEffect(effects, "poison_remove", Math.Abs(ResolveActionValue(action, attrs, "PoisonRemoveAmount")), GetTargetMode(action["Target"] as JObject, "self"), actionType);
                     return ApplyMetadata(effects, metadata);
 
                 case "TActionPlayerRegenApply":
@@ -270,6 +282,7 @@ namespace BazaarEventLogger
             var value = ResolveValue(action["Value"] as JObject, attrs);
             if (value == 0)
                 value = ResolveActionValue(action, attrs, attrType, 0);
+            value = ApplyOperationSign(value, action["Operation"]?.ToString());
 
             switch (attrType)
             {
@@ -303,6 +316,21 @@ namespace BazaarEventLogger
         {
             var attrType = action["AttributeType"]?.ToString() ?? "";
             var value = ResolveValue(action["Value"] as JObject, attrs);
+            var operation = action["Operation"]?.ToString();
+
+            if ((string.Equals(attrType, "Freeze", StringComparison.OrdinalIgnoreCase) ||
+                 string.Equals(attrType, "Slow", StringComparison.OrdinalIgnoreCase)) &&
+                (string.Equals(operation, "Subtract", StringComparison.OrdinalIgnoreCase) && value >= 1000000 ||
+                 string.Equals(operation, "Multiply", StringComparison.OrdinalIgnoreCase) && value == 0))
+            {
+                return NewEffect(
+                    string.Equals(attrType, "Freeze", StringComparison.OrdinalIgnoreCase) ? "clear_freeze" : "clear_slow",
+                    1,
+                    GetTargetMode(action["Target"] as JObject, "self_card"),
+                    actionType);
+            }
+
+            value = ApplyOperationSign(value, operation);
             if (value == 0)
                 return null;
 
@@ -353,6 +381,21 @@ namespace BazaarEventLogger
                 case "TTriggerOnPlayerEnrageEnded":
                     metadata.Trigger = SimEffectTriggers.OnPlayerEnrageEnded;
                     break;
+                case "TTriggerOnItemUsed":
+                    metadata.Trigger = SimEffectTriggers.OnItemUsed;
+                    metadata.TriggerCardSizes = definition?["Trigger"]?["Subject"]?["Conditions"]?["Sizes"]?
+                        .Values<string>()
+                        .Where(size => !string.IsNullOrWhiteSpace(size))
+                        .Distinct(StringComparer.OrdinalIgnoreCase)
+                        .ToList() ?? new List<string>();
+                    break;
+                case "TTriggerOnPlayerAttributeChanged":
+                    if (string.Equals(definition?["Trigger"]?["AttributeType"]?.ToString(), "Health", StringComparison.OrdinalIgnoreCase) &&
+                        string.Equals(definition?["Trigger"]?["ChangeType"]?.ToString(), "Loss", StringComparison.OrdinalIgnoreCase))
+                    {
+                        metadata.Trigger = SimEffectTriggers.OnPlayerHealthLoss;
+                    }
+                    break;
                 default:
                     metadata.Trigger = SimEffectTriggers.OnCardFired;
                     break;
@@ -364,7 +407,26 @@ namespace BazaarEventLogger
                     continue;
 
                 if (!string.Equals(prereqObj["$type"]?.ToString(), "TPrerequisitePlayer", StringComparison.OrdinalIgnoreCase))
+                {
+                    if (!string.Equals(prereqObj["$type"]?.ToString(), "TPrerequisiteCardCount", StringComparison.OrdinalIgnoreCase))
+                        continue;
+
+                    var selfCondition = prereqObj["Subject"]?["Conditions"] as JObject;
+                    if (selfCondition == null)
+                        continue;
+
+                    if (!string.Equals(selfCondition["$type"]?.ToString(), "TCardConditionalAttribute", StringComparison.OrdinalIgnoreCase))
+                        continue;
+
+                    if (!string.Equals(selfCondition["ComparisonOperator"]?.ToString(), "Equal", StringComparison.OrdinalIgnoreCase))
+                        continue;
+
+                    if (ResolveValue(selfCondition["ComparisonValue"] as JObject, null) != 0)
+                        continue;
+
+                    metadata.RequiresSourceAttributeZero = selfCondition["Attribute"]?.ToString();
                     continue;
+                }
 
                 var condition = prereqObj["Subject"]?["Conditions"] as JObject;
                 if (condition == null)
@@ -373,18 +435,34 @@ namespace BazaarEventLogger
                 if (!string.Equals(condition["$type"]?.ToString(), "TPlayerConditionalAttribute", StringComparison.OrdinalIgnoreCase))
                     continue;
 
-                if (!string.Equals(condition["Attribute"]?.ToString(), "Enraged", StringComparison.OrdinalIgnoreCase))
+                var attrName = condition["Attribute"]?.ToString();
+                if (string.Equals(attrName, "Enraged", StringComparison.OrdinalIgnoreCase))
+                {
+                    var comparison = condition["ComparisonOperator"]?.ToString() ?? "";
+                    var targetValue = ResolveValue(condition["ComparisonValue"] as JObject, null);
+                    if ((comparison == "GreaterThan" || comparison == "GreaterThanOrEqual") && targetValue <= 0)
+                        metadata.RequiresOwnerEnraged = true;
+                    else if ((comparison == "Equal" || comparison == "LessThanOrEqual") && targetValue <= 0)
+                        metadata.RequiresOwnerNotEnraged = true;
                     continue;
+                }
 
-                var comparison = condition["ComparisonOperator"]?.ToString() ?? "";
-                var targetValue = ResolveValue(condition["ComparisonValue"] as JObject, null);
-                if ((comparison == "GreaterThan" || comparison == "GreaterThanOrEqual") && targetValue <= 0)
-                    metadata.RequiresOwnerEnraged = true;
-                else if ((comparison == "Equal" || comparison == "LessThanOrEqual") && targetValue <= 0)
-                    metadata.RequiresOwnerNotEnraged = true;
+                if (string.Equals(attrName, "Health", StringComparison.OrdinalIgnoreCase) &&
+                    string.Equals(condition["ComparisonOperator"]?.ToString(), "LessThan", StringComparison.OrdinalIgnoreCase))
+                {
+                    metadata.RequiresOwnerHealthBelowRatio = ResolvePlayerAttributeRatio(condition["ComparisonValue"] as JObject, "HealthMax");
+                }
             }
 
             return metadata;
+        }
+
+        private static int ApplyOperationSign(int value, string operation)
+        {
+            if (string.Equals(operation, "Subtract", StringComparison.OrdinalIgnoreCase))
+                return -Math.Abs(value);
+
+            return value;
         }
 
         private static List<SimEffectSpec> ApplyMetadata(List<SimEffectSpec> effects, EffectMetadata metadata, bool isAura = false)
@@ -394,6 +472,9 @@ namespace BazaarEventLogger
                 effect.Trigger = effect.IsPassive ? SimEffectTriggers.Passive : metadata.Trigger;
                 effect.RequiresOwnerEnraged = metadata.RequiresOwnerEnraged;
                 effect.RequiresOwnerNotEnraged = metadata.RequiresOwnerNotEnraged;
+                effect.TriggerCardSizes = metadata.TriggerCardSizes.ToList();
+                effect.RequiresSourceAttributeZero = metadata.RequiresSourceAttributeZero;
+                effect.RequiresOwnerHealthBelowRatio = metadata.RequiresOwnerHealthBelowRatio;
             }
 
             if (!isAura)
@@ -453,8 +534,30 @@ namespace BazaarEventLogger
                 Source = effect.Source,
                 Trigger = effect.Trigger,
                 RequiresOwnerEnraged = effect.RequiresOwnerEnraged,
-                RequiresOwnerNotEnraged = effect.RequiresOwnerNotEnraged
+                RequiresOwnerNotEnraged = effect.RequiresOwnerNotEnraged,
+                TriggerCardSizes = effect.TriggerCardSizes.ToList(),
+                RequiresSourceAttributeZero = effect.RequiresSourceAttributeZero,
+                RequiresOwnerHealthBelowRatio = effect.RequiresOwnerHealthBelowRatio
             };
+        }
+
+        private static double? ResolvePlayerAttributeRatio(JObject valueObj, string attributeType)
+        {
+            if (valueObj == null)
+                return null;
+
+            var type = valueObj["$type"]?.ToString() ?? "";
+            if (!string.Equals(type, "TReferenceValuePlayerAttribute", StringComparison.OrdinalIgnoreCase))
+                return null;
+
+            if (!string.Equals(valueObj["AttributeType"]?.ToString(), attributeType, StringComparison.OrdinalIgnoreCase))
+                return null;
+
+            var modifier = valueObj["Modifier"] as JObject;
+            if (!string.Equals(modifier?["ModifyMode"]?.ToString(), "Multiply", StringComparison.OrdinalIgnoreCase))
+                return null;
+
+            return ResolveValue(modifier["Value"] as JObject, null);
         }
 
         private static string GetTargetMode(JObject target, string fallback = "opponent")
