@@ -1,0 +1,22 @@
+# Build outputs
+BazaarEventLogger/bin/
+BazaarEventLogger/obj/
+
+# Decompiled game code (copyright)
+BazaarGameShared/
+BazaarGameShared.dll
+BazaarGameShared.sln
+
+# Generated data (run export_monsters.py to regenerate)
+monster_data.json
+
+# IDE
+.vs/
+*.user
+*.suo
+
+# OS
+Thumbs.db
+.DS_Store
+
+.claude/
