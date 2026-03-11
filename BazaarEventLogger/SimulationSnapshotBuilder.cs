@@ -175,7 +175,15 @@ namespace BazaarEventLogger
                 .Where(p => int.TryParse(p.Value.ToString(), out _))
                 .ToDictionary(p => p.Name, p => int.Parse(p.Value.ToString()), StringComparer.OrdinalIgnoreCase);
             var info = CardDatabase.GetInfo(templateId);
-            var profile = EffectNormalizer.NormalizeCard(info, tier, exportedAttrs);
+            NormalizedCardProfile profile = null;
+            try
+            {
+                profile = EffectNormalizer.NormalizeCard(info, tier, exportedAttrs);
+            }
+            catch (Exception ex)
+            {
+                Plugin.Log?.LogWarning($"Monster card normalize fallback: {templateId} ({tier}) -> {ex.Message}");
+            }
 
             var snapshot = new SimCardSnapshot
             {

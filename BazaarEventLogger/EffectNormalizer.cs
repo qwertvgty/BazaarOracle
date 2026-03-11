@@ -372,7 +372,8 @@ namespace BazaarEventLogger
         private static EffectMetadata ParseMetadata(JObject definition)
         {
             var metadata = new EffectMetadata();
-            var triggerType = definition?["Trigger"]?["$type"]?.ToString();
+            var trigger = definition?["Trigger"] as JObject;
+            var triggerType = trigger?["$type"]?.ToString();
             switch (triggerType)
             {
                 case "TTriggerOnPlayerEnraged":
@@ -383,15 +384,15 @@ namespace BazaarEventLogger
                     break;
                 case "TTriggerOnItemUsed":
                     metadata.Trigger = SimEffectTriggers.OnItemUsed;
-                    metadata.TriggerCardSizes = definition?["Trigger"]?["Subject"]?["Conditions"]?["Sizes"]?
+                    metadata.TriggerCardSizes = ((((trigger?["Subject"] as JObject)?["Conditions"] as JObject)?["Sizes"] as JArray) ?? new JArray())
                         .Values<string>()
                         .Where(size => !string.IsNullOrWhiteSpace(size))
                         .Distinct(StringComparer.OrdinalIgnoreCase)
-                        .ToList() ?? new List<string>();
+                        .ToList();
                     break;
                 case "TTriggerOnPlayerAttributeChanged":
-                    if (string.Equals(definition?["Trigger"]?["AttributeType"]?.ToString(), "Health", StringComparison.OrdinalIgnoreCase) &&
-                        string.Equals(definition?["Trigger"]?["ChangeType"]?.ToString(), "Loss", StringComparison.OrdinalIgnoreCase))
+                    if (string.Equals(trigger?["AttributeType"]?.ToString(), "Health", StringComparison.OrdinalIgnoreCase) &&
+                        string.Equals(trigger?["ChangeType"]?.ToString(), "Loss", StringComparison.OrdinalIgnoreCase))
                     {
                         metadata.Trigger = SimEffectTriggers.OnPlayerHealthLoss;
                     }
@@ -411,7 +412,8 @@ namespace BazaarEventLogger
                     if (!string.Equals(prereqObj["$type"]?.ToString(), "TPrerequisiteCardCount", StringComparison.OrdinalIgnoreCase))
                         continue;
 
-                    var selfCondition = prereqObj["Subject"]?["Conditions"] as JObject;
+                    var selfSubject = prereqObj["Subject"] as JObject;
+                    var selfCondition = selfSubject?["Conditions"] as JObject;
                     if (selfCondition == null)
                         continue;
 
@@ -428,7 +430,8 @@ namespace BazaarEventLogger
                     continue;
                 }
 
-                var condition = prereqObj["Subject"]?["Conditions"] as JObject;
+                var subject = prereqObj["Subject"] as JObject;
+                var condition = subject?["Conditions"] as JObject;
                 if (condition == null)
                     continue;
 

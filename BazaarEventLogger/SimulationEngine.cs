@@ -143,8 +143,8 @@ namespace BazaarEventLogger
 
                 TriggerItemUsedEffects(owner, target, card, rng, events, ownerLabel);
 
-                card.CurrentCooldown = card.CooldownMax;
-                events?.Add($"{ownerLabel}:reset_cd:{card.Name}={card.CooldownMax}");
+                card.CurrentCooldown = GetEffectiveCooldownMax(card);
+                events?.Add($"{ownerLabel}:reset_cd:{card.Name}={card.CurrentCooldown}");
             }
         }
 
@@ -199,9 +199,10 @@ namespace BazaarEventLogger
                 case "damage":
                     foreach (var combatant in targetCombatants)
                     {
-                        ApplyDamage(combatant, effect.Value);
+                        var damageAmount = RollDamageAmount(sourceCard, effect.Value, rng, out var isCrit);
+                        ApplyDamage(combatant, damageAmount);
                         TriggerHealthLossEffectsIfNeeded(combatant, ReferenceEquals(combatant, owner) ? target : owner, rng, events, combatant.Name);
-                        events?.Add($"{effectLabel}:{combatant.Name}:hp={combatant.Health}:shield={combatant.Shield}");
+                        events?.Add($"{effectLabel}:{combatant.Name}:hp={combatant.Health}:shield={combatant.Shield}{(isCrit ? ":crit" : "")}");
                     }
                     break;
 
@@ -398,7 +399,10 @@ namespace BazaarEventLogger
                     case "Cooldown":
                     case "CooldownMax":
                         card.CooldownMax = Math.Max(250, card.CooldownMax - effect.Value);
-                        card.CurrentCooldown = Math.Min(card.CurrentCooldown, card.CooldownMax);
+                        card.CurrentCooldown = Math.Min(card.CurrentCooldown, GetEffectiveCooldownMax(card));
+                        break;
+                    case "FlatCooldownReduction":
+                        card.CurrentCooldown = Math.Min(card.CurrentCooldown, GetEffectiveCooldownMax(card));
                         break;
                 }
             }
@@ -687,6 +691,15 @@ namespace BazaarEventLogger
             card.CurrentCooldown = Math.Max(0, card.CurrentCooldown - reduction);
         }
 
+        private static int GetEffectiveCooldownMax(SimCardSnapshot card)
+        {
+            if (card == null)
+                return 0;
+
+            var flatReduction = GetAttribute(card, "FlatCooldownReduction");
+            return Math.Max(250, card.CooldownMax + flatReduction);
+        }
+
         private static void ModifyCardCooldown(IList<SimCardSnapshot> cards, int delta, Random rng, string scope)
         {
             var candidates = cards.Where(c => c.CooldownMax > 0).ToList();
@@ -797,6 +810,24 @@ namespace BazaarEventLogger
 
             if (damage > 0)
                 target.Health -= damage;
+        }
+
+        private static int RollDamageAmount(SimCardSnapshot sourceCard, int baseDamage, Random rng, out bool isCrit)
+        {
+            isCrit = false;
+            if (baseDamage <= 0 || sourceCard == null || rng == null)
+                return baseDamage;
+
+            var critChance = Math.Max(0, Math.Min(100, GetAttribute(sourceCard, "CritChance")));
+            if (critChance <= 0 || rng.Next(100) >= critChance)
+                return baseDamage;
+
+            isCrit = true;
+            var critBonusPercent = GetAttribute(sourceCard, "CritDamage");
+            if (critBonusPercent <= 0)
+                critBonusPercent = 100;
+
+            return (int)Math.Round(baseDamage * (1.0 + critBonusPercent / 100.0), MidpointRounding.AwayFromZero);
         }
 
         private static void CleanseOnHeal(SimCombatantSnapshot target, int healAmount)
