@@ -3,6 +3,14 @@ using System.Linq;
 
 namespace BazaarEventLogger
 {
+    public static class SimEffectTriggers
+    {
+        public const string OnCardFired = "on_card_fired";
+        public const string OnPlayerEnraged = "on_player_enraged";
+        public const string OnPlayerEnrageEnded = "on_player_enrage_ended";
+        public const string Passive = "passive";
+    }
+
     public class SimulationTraceEntry
     {
         public int TimeMs;
@@ -20,6 +28,9 @@ namespace BazaarEventLogger
         public string Target;
         public bool IsPassive;
         public string Source;
+        public string Trigger = SimEffectTriggers.OnCardFired;
+        public bool RequiresOwnerEnraged;
+        public bool RequiresOwnerNotEnraged;
 
         public override string ToString() => $"{Type}:{Value}->{Target}";
     }
@@ -77,8 +88,9 @@ namespace BazaarEventLogger
 
     public class SimulationBatchOptions
     {
-        public int Runs = 80;
+        public int Runs = 10;
         public int SeedBase = 1337;
+        public int TraceSamples = 1;
     }
 
     public class SingleSimulationResult

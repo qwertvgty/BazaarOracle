@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Text.RegularExpressions;
+using System.Diagnostics;
 using BazaarGameShared.Infra.Messages.GameSimEvents;
 using BepInEx;
 using Newtonsoft.Json.Linq;
@@ -41,11 +42,16 @@ namespace BazaarEventLogger
             var player = SimulationSnapshotBuilder.BuildPlayerSnapshot(gameState);
             var results = new List<BatchSimulationResult>();
             var traces = new List<string>();
+            var selectionSummary = string.Join(", ", encounterInstanceIds.Select(CardDatabase.ResolveName));
+            Plugin.Log?.LogInfo(
+                $"PredictCombats start: day={gameState?.Run?.Day}, hour={gameState?.Run?.Hour}, playerCards={player.Cards.Count}, encounters=[{selectionSummary}]");
 
             foreach (var encounterId in encounterInstanceIds)
             {
+                var stopwatch = Stopwatch.StartNew();
                 var encounterName = CardDatabase.ResolveName(encounterId);
                 var templateId = CardDatabase.GetInfo(encounterId)?.Id ?? encounterId;
+                Plugin.Log?.LogInfo($"PredictCombats encounter start: {encounterName} ({templateId})");
                 var resolvedByFallback = false;
                 if (!TryResolveMonsterId(templateId, encounterName, out var monsterId, out resolvedByFallback))
                 {
@@ -58,6 +64,7 @@ namespace BazaarEventLogger
                         Verdict = "未知",
                         UnsupportedEffects = new List<string> { $"monster_mapping:{templateId}" }
                     });
+                    Plugin.Log?.LogInfo($"PredictCombats encounter unresolved: {encounterName} ({templateId})");
                     continue;
                 }
 
@@ -73,6 +80,7 @@ namespace BazaarEventLogger
                         Verdict = "缺数据",
                         UnsupportedEffects = new List<string> { $"monster_data:{monsterId}" }
                     });
+                    Plugin.Log?.LogInfo($"PredictCombats encounter missing data: {encounterName} -> {monsterId}");
                     continue;
                 }
 
@@ -83,6 +91,9 @@ namespace BazaarEventLogger
                 if (resolvedByFallback)
                     result.UnsupportedEffects.Insert(0, $"monster_mapping_fallback:{encounterName}->{monsterId}");
                 results.Add(result);
+                stopwatch.Stop();
+                Plugin.Log?.LogInfo(
+                    $"PredictCombats encounter done: {encounterName} -> {result.Verdict}, runs={result.Runs}, duration={stopwatch.ElapsedMilliseconds}ms");
             }
 
             var output = SimulationReporter.FormatPredictionReport(player, results);
@@ -97,7 +108,8 @@ namespace BazaarEventLogger
                 Plugin.Log?.LogError($"Failed to write battle predictions: {ex.Message}");
             }
 
-            Plugin.Log?.LogInfo(output);
+            Plugin.Log?.LogInfo(
+                $"Battle predictions generated for {results.Count} encounter(s): {string.Join(", ", results.Select(result => $"{result.EncounterName}={result.Verdict}"))}");
         }
 
         private static void LoadMonsterData()

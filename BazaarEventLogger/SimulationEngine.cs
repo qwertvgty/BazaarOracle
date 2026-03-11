@@ -11,6 +11,7 @@ namespace BazaarEventLogger
         private const int PoisonTickMs = 1000;
         private const int SandstormDamageStartMs = 75000;
         private const int MaxDurationMs = 120000;
+        private const int MaxCastsPerTrigger = 32;
 
         public static BatchSimulationResult RunBatch(
             SimCombatantSnapshot playerSnapshot,
@@ -35,7 +36,12 @@ namespace BazaarEventLogger
             for (var i = 0; i < result.Runs; i++)
             {
                 var seed = options.SeedBase + i;
-                var sample = RunOnce(CloneCombatant(playerSnapshot), CloneCombatant(encounterSnapshot.Opponent), seed);
+                var captureTrace = i < Math.Max(0, options.TraceSamples);
+                var sample = RunOnce(
+                    CloneCombatant(playerSnapshot),
+                    CloneCombatant(encounterSnapshot.Opponent),
+                    seed,
+                    captureTrace);
                 result.Samples.Add(sample);
                 if (sample.Winner == "Player")
                     result.Wins++;
@@ -54,20 +60,27 @@ namespace BazaarEventLogger
             return result;
         }
 
-        public static SingleSimulationResult RunOnce(SimCombatantSnapshot player, SimCombatantSnapshot opponent, int seed)
+        public static SingleSimulationResult RunOnce(
+            SimCombatantSnapshot player,
+            SimCombatantSnapshot opponent,
+            int seed,
+            bool captureTrace = true)
         {
             var rng = new Random(seed);
             var timeMs = 0;
-            var trace = new List<SimulationTraceEntry>();
+            var trace = captureTrace ? new List<SimulationTraceEntry>() : null;
             ApplyPassiveEffects(player, opponent, rng);
             ApplyPassiveEffects(opponent, player, rng);
-            RecordTrace(trace, timeMs, player, opponent, "initial_state");
+            if (captureTrace)
+                RecordTrace(trace, timeMs, player, opponent, "initial_state");
 
             while (player.Health > 0 && opponent.Health > 0 && timeMs < MaxDurationMs)
             {
                 timeMs += TickMs;
-                var events = new List<string>();
+                List<string> events = captureTrace ? new List<string>() : null;
 
+                AdvanceEnrageState(player, opponent, rng, events, "Player");
+                AdvanceEnrageState(opponent, player, rng, events, "Opponent");
                 ProcessDot(player, events, "Player");
                 ProcessDot(opponent, events, "Opponent");
                 ProcessRegeneration(player, timeMs, events, "Player");
@@ -76,14 +89,16 @@ namespace BazaarEventLogger
 
                 if (player.Health <= 0 || opponent.Health <= 0)
                 {
-                    events.Add("combat_end:dot_or_sandstorm");
-                    RecordTrace(trace, timeMs, player, opponent, string.Join(" | ", events), events);
+                    events?.Add("combat_end:dot_or_sandstorm");
+                    if (captureTrace)
+                        RecordTrace(trace, timeMs, player, opponent, string.Join(" | ", events), events);
                     break;
                 }
 
                 ProcessCards(player, opponent, rng, events, "Player");
                 ProcessCards(opponent, player, rng, events, "Opponent");
-                RecordTrace(trace, timeMs, player, opponent, events.Count == 0 ? "idle" : string.Join(" | ", events), events);
+                if (captureTrace)
+                    RecordTrace(trace, timeMs, player, opponent, events == null || events.Count == 0 ? "idle" : string.Join(" | ", events), events);
             }
 
             return new SingleSimulationResult
@@ -93,7 +108,7 @@ namespace BazaarEventLogger
                 OpponentHealthRemaining = Math.Max(0, opponent.Health),
                 DurationMs = timeMs,
                 SandstormTriggered = timeMs >= SandstormDamageStartMs,
-                Trace = trace
+                Trace = trace ?? new List<SimulationTraceEntry>()
             };
         }
 
@@ -102,16 +117,20 @@ namespace BazaarEventLogger
             foreach (var card in owner.Cards)
             {
                 AdvanceCardTimers(card);
-                AdvanceCooldown(card);
+                AdvanceCooldown(owner, card);
                 if (card.CurrentCooldown > 0)
                     continue;
 
-                events.Add($"{ownerLabel}:trigger:{card.Name}");
-                for (var i = 0; i < Math.Max(1, card.Multicast); i++)
+                events?.Add($"{ownerLabel}:trigger:{card.Name}");
+                var castCount = Math.Max(1, Math.Min(card.Multicast, MaxCastsPerTrigger));
+                if (card.Multicast > MaxCastsPerTrigger)
+                    Plugin.Log?.LogWarning($"Clamped multicast for {ownerLabel}:{card.Name} from {card.Multicast} to {MaxCastsPerTrigger}");
+
+                for (var i = 0; i < castCount; i++)
                     ExecuteCard(card, owner, target, rng, events, ownerLabel, i);
 
                 card.CurrentCooldown = card.CooldownMax;
-                events.Add($"{ownerLabel}:reset_cd:{card.Name}={card.CooldownMax}");
+                events?.Add($"{ownerLabel}:reset_cd:{card.Name}={card.CooldownMax}");
             }
         }
 
@@ -124,8 +143,11 @@ namespace BazaarEventLogger
             string ownerLabel,
             int multicastIndex)
         {
-            foreach (var effect in card.Effects.Where(e => !e.IsPassive))
+            foreach (var effect in card.Effects.Where(e => !e.IsPassive && e.Trigger == SimEffectTriggers.OnCardFired).ToList())
             {
+                if (!ShouldActivateEffect(effect, owner))
+                    continue;
+
                 ApplyEffect(effect, owner, target, rng, card, events, ownerLabel, multicastIndex);
             }
         }
@@ -134,8 +156,13 @@ namespace BazaarEventLogger
         {
             foreach (var card in owner.Cards)
             {
-                foreach (var effect in card.Effects.Where(e => e.IsPassive))
+                foreach (var effect in card.Effects.Where(e => e.IsPassive && e.Trigger == SimEffectTriggers.Passive).ToList())
+                {
+                    if (!ShouldActivateEffect(effect, owner))
+                        continue;
+
                     ApplyEffect(effect, owner, target, rng, card);
+                }
             }
         }
 
@@ -228,10 +255,8 @@ namespace BazaarEventLogger
                 case "rage":
                     foreach (var combatant in targetCombatants)
                     {
-                        combatant.Rage = Math.Max(0, Math.Min(
-                            combatant.RageMax == 0 ? int.MaxValue : combatant.RageMax,
-                            combatant.Rage + effect.Value));
-                        events?.Add($"{effectLabel}:{combatant.Name}:rage={combatant.Rage}/{combatant.RageMax}");
+                        var otherCombatant = ReferenceEquals(combatant, owner) ? target : owner;
+                        ApplyRage(combatant, otherCombatant, effect.Value, rng, events, ownerLabel ?? owner.Name, effectLabel);
                     }
                     break;
 
@@ -323,12 +348,133 @@ namespace BazaarEventLogger
                     case "Multicast":
                         card.Multicast = Math.Max(1, card.Multicast + effect.Value);
                         break;
+                    case "Flying":
+                        var flying = card.Attributes.TryGetValue("Flying", out var currentFlying) ? currentFlying : 0;
+                        card.Attributes["Flying"] = Math.Max(0, flying + effect.Value);
+                        break;
                     case "Cooldown":
                     case "CooldownMax":
                         card.CooldownMax = Math.Max(250, card.CooldownMax - effect.Value);
                         card.CurrentCooldown = Math.Min(card.CurrentCooldown, card.CooldownMax);
                         break;
                 }
+            }
+        }
+
+        private static bool ShouldActivateEffect(SimEffectSpec effect, SimCombatantSnapshot owner)
+        {
+            if (effect == null)
+                return false;
+
+            if (effect.RequiresOwnerEnraged && !owner.IsEnraged)
+                return false;
+
+            if (effect.RequiresOwnerNotEnraged && owner.IsEnraged)
+                return false;
+
+            return true;
+        }
+
+        private static void ApplyRage(
+            SimCombatantSnapshot combatant,
+            SimCombatantSnapshot opponent,
+            int delta,
+            Random rng,
+            List<string> events,
+            string ownerLabel,
+            string effectLabel)
+        {
+            if (delta > 0 && combatant.IsEnraged)
+            {
+                events?.Add($"{effectLabel}:{combatant.Name}:rage_blocked_enraged");
+                return;
+            }
+
+            var maxRage = combatant.RageMax == 0 ? int.MaxValue : combatant.RageMax;
+            combatant.Rage = Math.Max(0, Math.Min(maxRage, combatant.Rage + delta));
+            events?.Add($"{effectLabel}:{combatant.Name}:rage={combatant.Rage}/{combatant.RageMax}");
+
+            if (!combatant.IsEnraged && combatant.RageMax > 0 && combatant.Rage >= combatant.RageMax)
+                EnterEnrage(combatant, opponent, rng, events, ownerLabel);
+        }
+
+        private static void AdvanceEnrageState(
+            SimCombatantSnapshot combatant,
+            SimCombatantSnapshot opponent,
+            Random rng,
+            List<string> events,
+            string ownerLabel)
+        {
+            if (!combatant.IsEnraged)
+                return;
+
+            combatant.EnragedDuration = Math.Max(0, combatant.EnragedDuration - TickMs);
+            events?.Add($"{ownerLabel}:enraged_tick:{combatant.EnragedDuration}");
+            if (combatant.EnragedDuration == 0)
+                EndEnrage(combatant, opponent, rng, events, ownerLabel);
+        }
+
+        private static void EnterEnrage(
+            SimCombatantSnapshot combatant,
+            SimCombatantSnapshot opponent,
+            Random rng,
+            List<string> events,
+            string ownerLabel)
+        {
+            if (combatant.IsEnraged)
+                return;
+
+            combatant.IsEnraged = true;
+            combatant.Rage = Math.Max(combatant.Rage, combatant.RageMax);
+            combatant.EnragedDuration = Math.Max(0, combatant.EnragedDurationMax);
+            ClearCombatantItemTempoDebuffs(combatant);
+            events?.Add($"{ownerLabel}:enraged_start:{combatant.EnragedDuration}");
+            TriggerEffects(combatant, opponent, rng, SimEffectTriggers.OnPlayerEnraged, events, ownerLabel);
+        }
+
+        private static void EndEnrage(
+            SimCombatantSnapshot combatant,
+            SimCombatantSnapshot opponent,
+            Random rng,
+            List<string> events,
+            string ownerLabel)
+        {
+            if (!combatant.IsEnraged)
+                return;
+
+            combatant.IsEnraged = false;
+            combatant.EnragedDuration = 0;
+            combatant.Rage = 0;
+            events?.Add($"{ownerLabel}:enraged_end");
+            TriggerEffects(combatant, opponent, rng, SimEffectTriggers.OnPlayerEnrageEnded, events, ownerLabel);
+        }
+
+        private static void TriggerEffects(
+            SimCombatantSnapshot owner,
+            SimCombatantSnapshot target,
+            Random rng,
+            string trigger,
+            List<string> events,
+            string ownerLabel)
+        {
+            foreach (var card in owner.Cards)
+            {
+                foreach (var effect in card.Effects.Where(e => !e.IsPassive && e.Trigger == trigger).ToList())
+                {
+                    if (!ShouldActivateEffect(effect, owner))
+                        continue;
+
+                    ApplyEffect(effect, owner, target, rng, card, events, ownerLabel);
+                }
+            }
+        }
+
+        private static void ClearCombatantItemTempoDebuffs(SimCombatantSnapshot combatant)
+        {
+            foreach (var card in combatant.Cards)
+            {
+                card.SlowDuration = 0;
+                card.Freeze = 0;
             }
         }
 
@@ -400,7 +546,7 @@ namespace BazaarEventLogger
                 card.Freeze = Math.Max(0, card.Freeze - TickMs);
         }
 
-        private static void AdvanceCooldown(SimCardSnapshot card)
+        private static void AdvanceCooldown(SimCombatantSnapshot owner, SimCardSnapshot card)
         {
             if (card.Freeze > 0)
                 return;
@@ -413,6 +559,10 @@ namespace BazaarEventLogger
                 reduction = TickMs * 2;
             else if (slowed && !hasted)
                 reduction = TickMs / 2;
+
+            var cooldownReduction = GetCooldownReductionPercent(owner, card);
+            if (cooldownReduction > 0 && cooldownReduction < 100)
+                reduction = (int)Math.Ceiling(reduction * 100.0 / (100 - cooldownReduction));
 
             card.CurrentCooldown = Math.Max(0, card.CurrentCooldown - reduction);
         }
@@ -443,12 +593,12 @@ namespace BazaarEventLogger
             if (IsMultiTargetScope(scope))
             {
                 foreach (var card in candidates)
-                    card.Freeze = Math.Max(card.Freeze, duration);
+                    card.Freeze = Math.Max(card.Freeze, GetAdjustedStatusDuration(card, duration, isFreeze: true));
                 return;
             }
 
             var selected = candidates[rng.Next(candidates.Count)];
-            selected.Freeze = Math.Max(selected.Freeze, duration);
+            selected.Freeze = Math.Max(selected.Freeze, GetAdjustedStatusDuration(selected, duration, isFreeze: true));
         }
 
         private static void ApplyStatusDuration(IList<SimCardSnapshot> cards, int duration, bool isHaste, Random rng, string scope)
@@ -473,18 +623,18 @@ namespace BazaarEventLogger
             while (target.Burn > 0 && target.BurnTickProgress >= BurnTickMs)
             {
                 ApplyDamage(target, target.Burn);
-                events.Add($"{label}:burn_tick:{target.Burn}:hp={target.Health}:shield={target.Shield}");
+                events?.Add($"{label}:burn_tick:{target.Burn}:hp={target.Health}:shield={target.Shield}");
                 target.Burn -= Math.Max(1, (int)Math.Floor(target.Burn * 0.03));
                 target.Burn = Math.Max(0, target.Burn);
                 target.BurnTickProgress -= BurnTickMs;
-                events.Add($"{label}:burn_decay:{target.Burn}");
+                events?.Add($"{label}:burn_decay:{target.Burn}");
             }
 
             target.PoisonTickProgress += TickMs;
             while (target.Poison > 0 && target.PoisonTickProgress >= PoisonTickMs)
             {
                 ApplyDamage(target, target.Poison);
-                events.Add($"{label}:poison_tick:{target.Poison}:hp={target.Health}:shield={target.Shield}");
+                events?.Add($"{label}:poison_tick:{target.Poison}:hp={target.Health}:shield={target.Shield}");
                 target.PoisonTickProgress -= PoisonTickMs;
             }
         }
@@ -494,7 +644,7 @@ namespace BazaarEventLogger
             if (target.HealthRegen > 0 && timeMs % 1000 == 0)
             {
                 target.Health = Math.Min(target.HealthMax, target.Health + target.HealthRegen);
-                events.Add($"{label}:regen_tick:{target.HealthRegen}:hp={target.Health}/{target.HealthMax}");
+                events?.Add($"{label}:regen_tick:{target.HealthRegen}:hp={target.Health}/{target.HealthMax}");
             }
         }
 
@@ -506,7 +656,7 @@ namespace BazaarEventLogger
             var sandstormDamage = ((timeMs - SandstormDamageStartMs) / 1000 + 1) * 50;
             ApplyDamage(player, sandstormDamage);
             ApplyDamage(opponent, sandstormDamage);
-            events.Add($"sandstorm:{sandstormDamage}:player_hp={player.Health}:opponent_hp={opponent.Health}");
+            events?.Add($"sandstorm:{sandstormDamage}:player_hp={player.Health}:opponent_hp={opponent.Health}");
         }
 
         private static void ApplyDamage(SimCombatantSnapshot target, int damage)
@@ -590,7 +740,10 @@ namespace BazaarEventLogger
                         Value = effect.Value,
                         Target = effect.Target,
                         IsPassive = effect.IsPassive,
-                        Source = effect.Source
+                        Source = effect.Source,
+                        Trigger = effect.Trigger,
+                        RequiresOwnerEnraged = effect.RequiresOwnerEnraged,
+                        RequiresOwnerNotEnraged = effect.RequiresOwnerNotEnraged
                     }).ToList()
                 }).ToList()
             };
@@ -669,7 +822,39 @@ namespace BazaarEventLogger
             if (isHaste)
                 card.HasteDuration = Math.Max(card.HasteDuration, duration);
             else
-                card.SlowDuration = Math.Max(card.SlowDuration, duration);
+                card.SlowDuration = Math.Max(card.SlowDuration, GetAdjustedStatusDuration(card, duration, isFreeze: false));
+        }
+
+        private static int GetAdjustedStatusDuration(SimCardSnapshot card, int duration, bool isFreeze)
+        {
+            if (duration <= 0)
+                return 0;
+
+            var reduction = GetAttribute(card, isFreeze ? "PercentFreezeReduction" : "PercentSlowReduction");
+            if (HasAttribute(card, "Flying"))
+                reduction += 50;
+
+            reduction = Math.Max(0, Math.Min(100, reduction));
+            return (int)Math.Ceiling(duration * (100 - reduction) / 100.0);
+        }
+
+        private static bool HasAttribute(SimCardSnapshot card, string attrName)
+        {
+            return GetAttribute(card, attrName) > 0;
+        }
+
+        private static int GetCooldownReductionPercent(SimCombatantSnapshot owner, SimCardSnapshot card)
+        {
+            var reduction = GetAttribute(card, "PercentCooldownReduction");
+            if (owner.IsEnraged)
+                reduction = Math.Max(reduction, 10);
+
+            return Math.Max(0, Math.Min(99, reduction));
+        }
+
+        private static int GetAttribute(SimCardSnapshot card, string attrName)
+        {
+            return card.Attributes.TryGetValue(attrName, out var value) ? value : 0;
         }
 
         private static List<SimCombatantSnapshot> ResolveCombatantTargets(
@@ -775,6 +960,11 @@ namespace BazaarEventLogger
                     target.EnragedDurationMax = Math.Max(0, target.EnragedDurationMax + value);
                     target.EnragedDuration = Math.Min(target.EnragedDuration, target.EnragedDurationMax);
                     break;
+                case "Enraged":
+                    target.IsEnraged = value > 0;
+                    if (!target.IsEnraged)
+                        target.EnragedDuration = 0;
+                    break;
                 default:
                     break;
             }
@@ -803,7 +993,7 @@ namespace BazaarEventLogger
 
         private static string FormatCombatantState(string label, SimCombatantSnapshot combatant)
         {
-            return $"{label}:HP={Math.Max(0, combatant.Health)}/{combatant.HealthMax},Shield={combatant.Shield},Burn={combatant.Burn},Poison={combatant.Poison},Regen={combatant.HealthRegen},Rage={combatant.Rage}/{combatant.RageMax}";
+            return $"{label}:HP={Math.Max(0, combatant.Health)}/{combatant.HealthMax},Shield={combatant.Shield},Burn={combatant.Burn},Poison={combatant.Poison},Regen={combatant.HealthRegen},Rage={combatant.Rage}/{combatant.RageMax},Enraged={(combatant.IsEnraged ? combatant.EnragedDuration : 0)}";
         }
 
         private static string FormatCardState(string prefix, SimCardSnapshot card)

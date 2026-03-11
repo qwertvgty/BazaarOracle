@@ -7,6 +7,13 @@ namespace BazaarEventLogger
 {
     public static class EffectNormalizer
     {
+        private class EffectMetadata
+        {
+            public string Trigger = SimEffectTriggers.OnCardFired;
+            public bool RequiresOwnerEnraged;
+            public bool RequiresOwnerNotEnraged;
+        }
+
         public static NormalizedCardProfile NormalizeCard(CardInfo info, string tierName, IDictionary<string, int> runtimeAttributes = null)
         {
             if (info == null)
@@ -44,7 +51,8 @@ namespace BazaarEventLogger
                             continue;
 
                         total++;
-                        var effects = ParseActions(ability.Value?["Action"] as JObject, attrs);
+                        var metadata = ParseMetadata(ability.Value as JObject);
+                        var effects = ParseActions(ability.Value?["Action"] as JObject, attrs, metadata);
                         if (effects.Count > 0)
                         {
                             profile.Effects.AddRange(effects);
@@ -70,7 +78,8 @@ namespace BazaarEventLogger
                             continue;
 
                         total++;
-                        var effects = ParseAuraActions(aura.Value?["Action"] as JObject, attrs);
+                        var metadata = ParseMetadata(aura.Value as JObject);
+                        var effects = ParseAuraActions(aura.Value?["Action"] as JObject, attrs, metadata);
                         if (effects.Count > 0)
                         {
                             profile.Effects.AddRange(effects);
@@ -121,7 +130,7 @@ namespace BazaarEventLogger
                 AddIfPositive(profile.Effects, "damage", GetValue(attrs, "Custom_0"), "opponent", "attr");
         }
 
-        private static List<SimEffectSpec> ParseActions(JObject action, IDictionary<string, int> attrs)
+        private static List<SimEffectSpec> ParseActions(JObject action, IDictionary<string, int> attrs, EffectMetadata metadata)
         {
             var effects = new List<SimEffectSpec>();
             if (action == null)
@@ -133,67 +142,75 @@ namespace BazaarEventLogger
                 case "TActionPlayerDamage":
                 case "TActionCardDamage":
                     AddEffect(effects, "damage", Math.Abs(ResolveActionValue(action, attrs, "DamageAmount")), GetTargetMode(action["Target"] as JObject), actionType);
-                    return effects;
+                    return ApplyMetadata(effects, metadata);
 
                 case "TActionPlayerHeal":
                 case "TActionCardHeal":
                     AddEffect(effects, "heal", Math.Abs(ResolveActionValue(action, attrs, "HealAmount")), GetTargetMode(action["Target"] as JObject, "self"), actionType);
-                    return effects;
+                    return ApplyMetadata(effects, metadata);
 
                 case "TActionPlayerShield":
                 case "TActionPlayerShieldApply":
                 case "TActionCardShield":
                     AddEffect(effects, "shield_apply", Math.Abs(ResolveActionValue(action, attrs, "ShieldApplyAmount")), GetTargetMode(action["Target"] as JObject, "self"), actionType);
-                    return effects;
+                    return ApplyMetadata(effects, metadata);
 
                 case "TActionPlayerBurn":
                 case "TActionPlayerBurnApply":
                 case "TActionCardBurn":
                     AddEffect(effects, "burn_apply", Math.Abs(ResolveActionValue(action, attrs, "BurnApplyAmount")), GetTargetMode(action["Target"] as JObject), actionType);
-                    return effects;
+                    return ApplyMetadata(effects, metadata);
 
                 case "TActionPlayerPoison":
                 case "TActionPlayerPoisonApply":
                 case "TActionCardPoison":
                     AddEffect(effects, "poison_apply", Math.Abs(ResolveActionValue(action, attrs, "PoisonApplyAmount")), GetTargetMode(action["Target"] as JObject), actionType);
-                    return effects;
+                    return ApplyMetadata(effects, metadata);
 
                 case "TActionPlayerRegenApply":
                     AddEffect(effects, "regen_apply", Math.Abs(ResolveActionValue(action, attrs, "RegenApplyAmount")), GetTargetMode(action["Target"] as JObject, "self"), actionType);
-                    return effects;
+                    return ApplyMetadata(effects, metadata);
 
                 case "TActionCardHaste":
                     AddEffect(effects, "haste", Math.Abs(ResolveActionValue(action, attrs, "HasteAmount", 1000)), GetTargetMode(action["Target"] as JObject, "self_card"), actionType);
-                    return effects;
+                    return ApplyMetadata(effects, metadata);
 
                 case "TActionCardSlow":
                     AddEffect(effects, "slow", Math.Abs(ResolveActionValue(action, attrs, "SlowAmount", 1000)), GetTargetMode(action["Target"] as JObject, "opponent_card"), actionType);
-                    return effects;
+                    return ApplyMetadata(effects, metadata);
 
                 case "TActionCardFreeze":
                     AddEffect(effects, "freeze", Math.Abs(ResolveActionValue(action, attrs, "FreezeAmount", 1000)), GetTargetMode(action["Target"] as JObject, "opponent_card"), actionType);
-                    return effects;
+                    return ApplyMetadata(effects, metadata);
+
+                case "TActionCardFlyingStart":
+                    AddEffect(effects, "buff_Flying", 1, GetTargetMode(action["Target"] as JObject, "self_card"), actionType);
+                    return ApplyMetadata(effects, metadata);
+
+                case "TActionCardFlyingStop":
+                    AddEffect(effects, "buff_Flying", -1, GetTargetMode(action["Target"] as JObject, "self_card"), actionType);
+                    return ApplyMetadata(effects, metadata);
 
                 case "TActionCardCharge":
                 case "TActionCardReload":
                     AddEffect(effects, "cooldown_charge", Math.Abs(ResolveActionValue(action, attrs, "ChargeAmount", 1000)), GetTargetMode(action["Target"] as JObject, "self_card"), actionType);
-                    return effects;
+                    return ApplyMetadata(effects, metadata);
 
                 case "TActionPlayerJoyApply":
                     AddEffect(effects, "joy", Math.Abs(ResolveActionValue(action, attrs, "JoyAmount", 1)), GetTargetMode(action["Target"] as JObject, "self"), actionType);
-                    return effects;
+                    return ApplyMetadata(effects, metadata);
 
                 case "TActionPlayerRageApply":
                     AddEffect(effects, "rage", Math.Abs(ResolveActionValue(action, attrs, "RageAmount", 1)), GetTargetMode(action["Target"] as JObject, "self"), actionType);
-                    return effects;
+                    return ApplyMetadata(effects, metadata);
 
                 case "TActionPlayerModifyAttribute":
                     AddEffect(effects, ParsePlayerModify(action, attrs, actionType));
-                    return effects;
+                    return ApplyMetadata(effects, metadata);
 
                 case "TActionCardModifyAttribute":
                     AddEffect(effects, ParseCardModify(action, attrs, actionType));
-                    return effects;
+                    return ApplyMetadata(effects, metadata);
 
                 case "TActionComposite":
                 case "TActionConditional":
@@ -202,18 +219,18 @@ namespace BazaarEventLogger
                     if (nested != null)
                     {
                         foreach (var child in nested.OfType<JObject>())
-                            effects.AddRange(ParseActions(child, attrs));
+                            effects.AddRange(ParseActions(child, attrs, metadata));
                     }
 
-                    effects.AddRange(ParseActions(action["Action"] as JObject, attrs));
-                    return effects;
+                    effects.AddRange(ParseActions(action["Action"] as JObject, attrs, metadata));
+                    return ApplyMetadata(effects, metadata);
 
                 default:
-                    return effects;
+                    return ApplyMetadata(effects, metadata);
             }
         }
 
-        private static List<SimEffectSpec> ParseAuraActions(JObject action, IDictionary<string, int> attrs)
+        private static List<SimEffectSpec> ParseAuraActions(JObject action, IDictionary<string, int> attrs, EffectMetadata metadata)
         {
             var effects = new List<SimEffectSpec>();
             if (action == null)
@@ -244,7 +261,7 @@ namespace BazaarEventLogger
                 });
             }
 
-            return effects;
+            return ApplyMetadata(effects, metadata, isAura: true);
         }
 
         private static SimEffectSpec ParsePlayerModify(JObject action, IDictionary<string, int> attrs, string actionType)
@@ -321,6 +338,122 @@ namespace BazaarEventLogger
                 Value = value,
                 Target = string.IsNullOrEmpty(target) ? "opponent" : target,
                 Source = source
+            };
+        }
+
+        private static EffectMetadata ParseMetadata(JObject definition)
+        {
+            var metadata = new EffectMetadata();
+            var triggerType = definition?["Trigger"]?["$type"]?.ToString();
+            switch (triggerType)
+            {
+                case "TTriggerOnPlayerEnraged":
+                    metadata.Trigger = SimEffectTriggers.OnPlayerEnraged;
+                    break;
+                case "TTriggerOnPlayerEnrageEnded":
+                    metadata.Trigger = SimEffectTriggers.OnPlayerEnrageEnded;
+                    break;
+                default:
+                    metadata.Trigger = SimEffectTriggers.OnCardFired;
+                    break;
+            }
+
+            foreach (var prereq in definition?["Prerequisites"] as JArray ?? new JArray())
+            {
+                if (!(prereq is JObject prereqObj))
+                    continue;
+
+                if (!string.Equals(prereqObj["$type"]?.ToString(), "TPrerequisitePlayer", StringComparison.OrdinalIgnoreCase))
+                    continue;
+
+                var condition = prereqObj["Subject"]?["Conditions"] as JObject;
+                if (condition == null)
+                    continue;
+
+                if (!string.Equals(condition["$type"]?.ToString(), "TPlayerConditionalAttribute", StringComparison.OrdinalIgnoreCase))
+                    continue;
+
+                if (!string.Equals(condition["Attribute"]?.ToString(), "Enraged", StringComparison.OrdinalIgnoreCase))
+                    continue;
+
+                var comparison = condition["ComparisonOperator"]?.ToString() ?? "";
+                var targetValue = ResolveValue(condition["ComparisonValue"] as JObject, null);
+                if ((comparison == "GreaterThan" || comparison == "GreaterThanOrEqual") && targetValue <= 0)
+                    metadata.RequiresOwnerEnraged = true;
+                else if ((comparison == "Equal" || comparison == "LessThanOrEqual") && targetValue <= 0)
+                    metadata.RequiresOwnerNotEnraged = true;
+            }
+
+            return metadata;
+        }
+
+        private static List<SimEffectSpec> ApplyMetadata(List<SimEffectSpec> effects, EffectMetadata metadata, bool isAura = false)
+        {
+            foreach (var effect in effects)
+            {
+                effect.Trigger = effect.IsPassive ? SimEffectTriggers.Passive : metadata.Trigger;
+                effect.RequiresOwnerEnraged = metadata.RequiresOwnerEnraged;
+                effect.RequiresOwnerNotEnraged = metadata.RequiresOwnerNotEnraged;
+            }
+
+            if (!isAura)
+                return effects;
+
+            if (metadata.RequiresOwnerEnraged)
+                return ConvertAuraToEnrageWindow(effects, activeWhileEnraged: true);
+
+            if (metadata.RequiresOwnerNotEnraged)
+                return ConvertAuraToEnrageWindow(effects, activeWhileEnraged: false);
+
+            return effects;
+        }
+
+        private static List<SimEffectSpec> ConvertAuraToEnrageWindow(IEnumerable<SimEffectSpec> effects, bool activeWhileEnraged)
+        {
+            var converted = new List<SimEffectSpec>();
+            foreach (var effect in effects)
+            {
+                if (!activeWhileEnraged)
+                {
+                    var baseEffect = CloneEffect(effect);
+                    baseEffect.IsPassive = true;
+                    baseEffect.Trigger = SimEffectTriggers.Passive;
+                    baseEffect.RequiresOwnerEnraged = false;
+                    baseEffect.RequiresOwnerNotEnraged = false;
+                    converted.Add(baseEffect);
+                }
+
+                var enterEffect = CloneEffect(effect);
+                enterEffect.IsPassive = false;
+                enterEffect.Trigger = activeWhileEnraged ? SimEffectTriggers.OnPlayerEnraged : SimEffectTriggers.OnPlayerEnrageEnded;
+                enterEffect.RequiresOwnerEnraged = false;
+                enterEffect.RequiresOwnerNotEnraged = false;
+                converted.Add(enterEffect);
+
+                var exitEffect = CloneEffect(effect);
+                exitEffect.IsPassive = false;
+                exitEffect.Trigger = activeWhileEnraged ? SimEffectTriggers.OnPlayerEnrageEnded : SimEffectTriggers.OnPlayerEnraged;
+                exitEffect.Value = -exitEffect.Value;
+                exitEffect.RequiresOwnerEnraged = false;
+                exitEffect.RequiresOwnerNotEnraged = false;
+                converted.Add(exitEffect);
+            }
+
+            return converted;
+        }
+
+        private static SimEffectSpec CloneEffect(SimEffectSpec effect)
+        {
+            return new SimEffectSpec
+            {
+                Type = effect.Type,
+                Value = effect.Value,
+                Target = effect.Target,
+                IsPassive = effect.IsPassive,
+                Source = effect.Source,
+                Trigger = effect.Trigger,
+                RequiresOwnerEnraged = effect.RequiresOwnerEnraged,
+                RequiresOwnerNotEnraged = effect.RequiresOwnerNotEnraged
             };
         }
 
@@ -436,6 +569,7 @@ namespace BazaarEventLogger
                 return;
 
             effect.IsPassive = true;
+            effect.Trigger = SimEffectTriggers.Passive;
             target.Add(effect);
         }
     }
