@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Text.RegularExpressions;
 using BazaarGameShared.Domain.Core.Types;
 using BazaarGameShared.Infra.Messages.GameSimEvents;
 using Newtonsoft.Json.Linq;
@@ -37,9 +38,16 @@ namespace BazaarEventLogger
 
             if (state?.Cards != null)
             {
-                foreach (var kvp in state.Cards)
+                var orderedCards = state.Cards
+                    .Values
+                    .Where(card => card != null)
+                    .OrderBy(GetCardSortBucket)
+                    .ThenBy(GetCardSocketOrder)
+                    .ThenBy(card => CardDatabase.ResolveName(card.InstanceId), StringComparer.OrdinalIgnoreCase)
+                    .ToList();
+
+                foreach (var card in orderedCards)
                 {
-                    var card = kvp.Value;
                     var info = CardDatabase.GetInfo(card.InstanceId);
                     var type = info?.Type ?? "";
                     var isTriggeredSupport = string.Equals(type, "Skill", StringComparison.OrdinalIgnoreCase) ||
@@ -160,46 +168,57 @@ namespace BazaarEventLogger
             if (cardObj == null)
                 return null;
 
+            var templateId = cardObj["templateId"]?.ToString() ?? "";
+            var tier = cardObj["tier"]?.ToString() ?? "Bronze";
+            var exportedAttrs = (cardObj["attributes"] as JObject ?? new JObject())
+                .Properties()
+                .Where(p => int.TryParse(p.Value.ToString(), out _))
+                .ToDictionary(p => p.Name, p => int.Parse(p.Value.ToString()), StringComparer.OrdinalIgnoreCase);
+            var info = CardDatabase.GetInfo(templateId);
+            var profile = EffectNormalizer.NormalizeCard(info, tier, exportedAttrs);
+
             var snapshot = new SimCardSnapshot
             {
-                Name = cardObj["name"]?.ToString() ?? "?",
-                TemplateId = cardObj["templateId"]?.ToString() ?? "",
-                Tier = cardObj["tier"]?.ToString() ?? "Bronze",
-                Size = cardObj["size"]?.ToString() ?? "",
-                CooldownMax = cardObj["cooldownMax"]?.Value<int>() ?? 0,
-                Multicast = Math.Max(1, cardObj["multicast"]?.Value<int>() ?? 1),
-                Attributes = (cardObj["attributes"] as JObject ?? new JObject())
-                    .Properties()
-                    .Where(p => int.TryParse(p.Value.ToString(), out _))
-                    .ToDictionary(p => p.Name, p => int.Parse(p.Value.ToString()), StringComparer.OrdinalIgnoreCase),
-                CoverageScore = cardObj["coverageScore"]?.Value<double?>() ?? 0.75
+                Name = info?.InternalName ?? cardObj["name"]?.ToString() ?? "?",
+                TemplateId = templateId,
+                Tier = tier,
+                Size = info?.Size ?? cardObj["size"]?.ToString() ?? "",
+                CooldownMax = profile?.CooldownMax ?? cardObj["cooldownMax"]?.Value<int>() ?? 0,
+                Multicast = profile?.Multicast ?? Math.Max(1, cardObj["multicast"]?.Value<int>() ?? 1),
+                Attributes = profile?.Attributes ?? exportedAttrs,
+                Effects = profile?.Effects ?? new List<SimEffectSpec>(),
+                UnsupportedEffects = profile?.UnsupportedEffects ?? new List<string>(),
+                CoverageScore = profile?.CoverageScore ?? cardObj["coverageScore"]?.Value<double?>() ?? 0.75
             };
 
-            foreach (var effectObj in cardObj["effects"] as JArray ?? new JArray())
+            if (snapshot.Effects.Count == 0)
             {
-                var effect = new SimEffectSpec
+                foreach (var effectObj in cardObj["effects"] as JArray ?? new JArray())
                 {
-                    Type = effectObj["type"]?.ToString() ?? "unknown",
-                    Value = effectObj["value"]?.Value<int?>() ?? 0,
-                    Target = effectObj["target"]?.ToString() ?? "opponent",
-                    IsPassive = effectObj["passive"]?.Value<bool>() ?? false,
-                    Source = effectObj["source"]?.ToString() ?? "export",
-                    Trigger = effectObj["trigger"]?.ToString() ?? (effectObj["passive"]?.Value<bool>() ?? false ? SimEffectTriggers.Passive : SimEffectTriggers.OnCardFired),
-                    RequiresOwnerEnraged = effectObj["requiresOwnerEnraged"]?.Value<bool>() ?? false,
-                    RequiresOwnerNotEnraged = effectObj["requiresOwnerNotEnraged"]?.Value<bool>() ?? false,
-                    TriggerCardSizes = (effectObj["triggerCardSizes"] as JArray ?? new JArray()).Values<string>().ToList(),
-                    RequiresSourceAttributeZero = effectObj["requiresSourceAttributeZero"]?.ToString(),
-                    RequiresOwnerHealthBelowRatio = effectObj["requiresOwnerHealthBelowRatio"]?.Value<double?>()
-                };
+                    var effect = new SimEffectSpec
+                    {
+                        Type = effectObj["type"]?.ToString() ?? "unknown",
+                        Value = effectObj["value"]?.Value<int?>() ?? 0,
+                        Target = effectObj["target"]?.ToString() ?? "opponent",
+                        IsPassive = effectObj["passive"]?.Value<bool>() ?? false,
+                        Source = effectObj["source"]?.ToString() ?? "export",
+                        Trigger = effectObj["trigger"]?.ToString() ?? (effectObj["passive"]?.Value<bool>() ?? false ? SimEffectTriggers.Passive : SimEffectTriggers.OnCardFired),
+                        RequiresOwnerEnraged = effectObj["requiresOwnerEnraged"]?.Value<bool>() ?? false,
+                        RequiresOwnerNotEnraged = effectObj["requiresOwnerNotEnraged"]?.Value<bool>() ?? false,
+                        TriggerCardSizes = (effectObj["triggerCardSizes"] as JArray ?? new JArray()).Values<string>().ToList(),
+                        RequiresSourceAttributeZero = effectObj["requiresSourceAttributeZero"]?.ToString(),
+                        RequiresOwnerHealthBelowRatio = effectObj["requiresOwnerHealthBelowRatio"]?.Value<double?>()
+                    };
 
-                if (effect.Value > 0 || effect.IsPassive)
-                    snapshot.Effects.Add(effect);
+                    if (effect.Value > 0 || effect.IsPassive)
+                        snapshot.Effects.Add(effect);
+                }
+
+                snapshot.UnsupportedEffects = (cardObj["unsupportedEffects"] as JArray ?? new JArray())
+                    .Values<string>()
+                    .Distinct(StringComparer.OrdinalIgnoreCase)
+                    .ToList();
             }
-
-            snapshot.UnsupportedEffects = (cardObj["unsupportedEffects"] as JArray ?? new JArray())
-                .Values<string>()
-                .Distinct(StringComparer.OrdinalIgnoreCase)
-                .ToList();
 
             var hasActiveCooldownEffect = snapshot.Effects.Any(effect => effect.Trigger == SimEffectTriggers.OnCardFired);
             if (snapshot.CooldownMax <= 0 && !hasActiveCooldownEffect && snapshot.Effects.Count == 0)
@@ -238,6 +257,31 @@ namespace BazaarEventLogger
         private static int GetRuntimeAttr(IDictionary<string, int> attrs, string key, int defaultValue = 0)
         {
             return attrs != null && attrs.TryGetValue(key, out var value) ? value : defaultValue;
+        }
+
+        private static int GetCardSortBucket(SimUpdateCard card)
+        {
+            var info = CardDatabase.GetInfo(card?.InstanceId);
+            var type = info?.Type ?? "";
+            if (string.Equals(type, "Skill", StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(type, "PlayerEffect", StringComparison.OrdinalIgnoreCase))
+            {
+                return 1;
+            }
+
+            return 0;
+        }
+
+        private static int GetCardSocketOrder(SimUpdateCard card)
+        {
+            var socket = card?.Placement?.Socket?.ToString();
+            if (string.IsNullOrEmpty(socket))
+                return int.MaxValue;
+
+            var match = Regex.Match(socket, @"(\d+)$");
+            return match.Success && int.TryParse(match.Groups[1].Value, out var value)
+                ? value
+                : int.MaxValue;
         }
     }
 }

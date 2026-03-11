@@ -32,6 +32,9 @@ namespace BazaarEventLogger
                     .ToList(),
                 KeyThreats = BuildThreatSummary(encounterSnapshot.Opponent)
             };
+            var totalPlayerHealthRemaining = 0.0;
+            var totalOpponentHealthRemaining = 0.0;
+            var durations = new List<double>(result.Runs);
 
             for (var i = 0; i < result.Runs; i++)
             {
@@ -42,18 +45,24 @@ namespace BazaarEventLogger
                     CloneCombatant(encounterSnapshot.Opponent),
                     seed,
                     captureTrace);
-                result.Samples.Add(sample);
+                if (captureTrace && result.TraceSample == null)
+                    result.TraceSample = sample;
+
+                totalPlayerHealthRemaining += sample.PlayerHealthRemaining;
+                totalOpponentHealthRemaining += sample.OpponentHealthRemaining;
+                durations.Add(sample.DurationMs / 1000.0);
                 if (sample.Winner == "Player")
                     result.Wins++;
                 else
                     result.Losses++;
+                if (sample.SandstormTriggered)
+                    result.SandstormSeen = true;
             }
 
             result.WinRate = result.Runs == 0 ? 0 : (double)result.Wins / result.Runs;
-            result.AveragePlayerHealthRemaining = result.Samples.Average(s => s.PlayerHealthRemaining);
-            result.AverageOpponentHealthRemaining = result.Samples.Average(s => s.OpponentHealthRemaining);
-            result.MedianDurationSeconds = Median(result.Samples.Select(s => s.DurationMs / 1000.0));
-            result.SandstormSeen = result.Samples.Any(s => s.SandstormTriggered);
+            result.AveragePlayerHealthRemaining = result.Runs == 0 ? 0 : totalPlayerHealthRemaining / result.Runs;
+            result.AverageOpponentHealthRemaining = result.Runs == 0 ? 0 : totalOpponentHealthRemaining / result.Runs;
+            result.MedianDurationSeconds = Median(durations);
             result.Verdict = BuildVerdict(result.WinRate, result.CoverageScore);
             result.ConfidenceLabel = BuildConfidenceLabel(result.CoverageScore);
             result.LossReasons = BuildLossReasons(result, encounterSnapshot.Opponent);

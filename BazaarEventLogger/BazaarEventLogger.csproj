@@ -27,6 +27,14 @@
       <HintPath>E:\SteamLibrary\steamapps\common\The Bazaar\TheBazaar_Data\Managed\UnityEngine.CoreModule.dll</HintPath>
       <Private>false</Private>
     </Reference>
+    <Reference Include="UnityEngine.IMGUIModule">
+      <HintPath>E:\SteamLibrary\steamapps\common\The Bazaar\TheBazaar_Data\Managed\UnityEngine.IMGUIModule.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="UnityEngine.InputLegacyModule">
+      <HintPath>E:\SteamLibrary\steamapps\common\The Bazaar\TheBazaar_Data\Managed\UnityEngine.InputLegacyModule.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
     <Reference Include="UnityEngine">
       <HintPath>E:\SteamLibrary\steamapps\common\The Bazaar\TheBazaar_Data\Managed\UnityEngine.dll</HintPath>
       <Private>false</Private>

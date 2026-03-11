@@ -14,19 +14,24 @@ namespace BazaarEventLogger
     {
         public static string LogFilePath { get; private set; }
         public static string TraceLogFilePath { get; private set; }
+        private static readonly object SessionLock = new object();
 
         private static JObject _monsterData;
+        private static BattlePredictionSession _lastSession;
         private static readonly Dictionary<string, string> EncounterToMonster =
             new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
         private static readonly Dictionary<string, string> MonsterNameToId =
             new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
         private static readonly Dictionary<string, MonsterFingerprint> MonsterFingerprints =
             new Dictionary<string, MonsterFingerprint>(StringComparer.OrdinalIgnoreCase);
+        private static string TraceCacheDirectory =>
+            Path.Combine(Paths.BepInExRootPath, "BattleTraceCache");
 
         public static void Initialize()
         {
             LogFilePath = Path.Combine(Paths.BepInExRootPath, "BattleSimulator.log");
             TraceLogFilePath = Path.Combine(Paths.BepInExRootPath, "BattleSimulatorTicks.log");
+            Directory.CreateDirectory(TraceCacheDirectory);
             var header = $"=== Battle Simulator Started @ {DateTime.Now:yyyy-MM-dd HH:mm:ss} ==={Environment.NewLine}";
             File.AppendAllText(LogFilePath, header);
             File.AppendAllText(TraceLogFilePath, header);
@@ -40,8 +45,9 @@ namespace BazaarEventLogger
                 return;
 
             var player = SimulationSnapshotBuilder.BuildPlayerSnapshot(gameState);
+            var options = new SimulationBatchOptions();
             var results = new List<BatchSimulationResult>();
-            var traces = new List<string>();
+            var records = new List<BattlePredictionEncounterRecord>();
             var selectionSummary = string.Join(", ", encounterInstanceIds.Select(CardDatabase.ResolveName));
             Plugin.Log?.LogInfo(
                 $"PredictCombats start: day={gameState?.Run?.Day}, hour={gameState?.Run?.Hour}, playerCards={player.Cards.Count}, encounters=[{selectionSummary}]");
@@ -85,23 +91,45 @@ namespace BazaarEventLogger
                 }
 
                 var encounter = SimulationSnapshotBuilder.BuildEncounterSnapshot(encounterId, encounterName, monsterId, monsterObj);
-                var result = SimulationEngine.RunBatch(player, encounter);
-                if (result.Samples.Count > 0)
-                    traces.Add(SimulationReporter.FormatSimulationTrace(encounterName, result.MonsterName, result.Samples[0]));
+                var result = SimulationEngine.RunBatch(player, encounter, options);
+                var traceText = result.TraceSample != null
+                    ? SimulationReporter.FormatSimulationTrace(encounterName, result.MonsterName, result.TraceSample)
+                    : string.Empty;
+                var traceFilePath = WriteEncounterTrace(selectionSummary, encounterName, traceText);
+                AppendTraceLog(traceText);
                 if (resolvedByFallback)
                     result.UnsupportedEffects.Insert(0, $"monster_mapping_fallback:{encounterName}->{monsterId}");
+                result.TraceSample = null;
                 results.Add(result);
+                records.Add(new BattlePredictionEncounterRecord
+                {
+                    EncounterId = encounterId,
+                    EncounterName = encounterName,
+                    MonsterId = monsterId,
+                    MonsterName = result.MonsterName,
+                    EncounterSnapshot = encounter,
+                    Result = result,
+                    TraceFilePath = traceFilePath
+                });
                 stopwatch.Stop();
                 Plugin.Log?.LogInfo(
                     $"PredictCombats encounter done: {encounterName} -> {result.Verdict}, runs={result.Runs}, duration={stopwatch.ElapsedMilliseconds}ms");
             }
 
             var output = SimulationReporter.FormatPredictionReport(player, results);
+            SetLastSession(new BattlePredictionSession
+            {
+                Signature = $"{gameState?.Run?.Day}:{gameState?.Run?.Hour}:{selectionSummary}",
+                CreatedAtUtc = DateTime.UtcNow,
+                ManualRerun = false,
+                Options = options,
+                PlayerSnapshot = player,
+                Encounters = records,
+                SummaryReport = output
+            });
             try
             {
                 File.AppendAllText(LogFilePath, output);
-                if (traces.Count > 0)
-                    File.AppendAllText(TraceLogFilePath, string.Join(Environment.NewLine, traces) + Environment.NewLine);
             }
             catch (Exception ex)
             {
@@ -110,6 +138,87 @@ namespace BazaarEventLogger
 
             Plugin.Log?.LogInfo(
                 $"Battle predictions generated for {results.Count} encounter(s): {string.Join(", ", results.Select(result => $"{result.EncounterName}={result.Verdict}"))}");
+        }
+
+        public static bool TryGetLastSession(out BattlePredictionSession session)
+        {
+            lock (SessionLock)
+            {
+                session = _lastSession;
+                return session != null;
+            }
+        }
+
+        public static bool TryRerunCurrentPredictions(out BattlePredictionSession session)
+        {
+            session = null;
+            if (!GameSimPatch.TryBuildCurrentPredictionContext(out var gameState, out var encounters))
+                return false;
+
+            PredictCombats(gameState, encounters);
+            if (!TryGetLastSession(out session) || session == null)
+                return false;
+
+            session.ManualRerun = true;
+            session.CreatedAtUtc = DateTime.UtcNow;
+            return true;
+        }
+
+        private static void SetLastSession(BattlePredictionSession session)
+        {
+            lock (SessionLock)
+                _lastSession = session;
+        }
+
+        private static string WriteEncounterTrace(string selectionSummary, string encounterName, string traceText)
+        {
+            if (string.IsNullOrWhiteSpace(traceText))
+                return null;
+
+            try
+            {
+                Directory.CreateDirectory(TraceCacheDirectory);
+                var selectionPart = SanitizePathPart(selectionSummary);
+                var encounterPart = SanitizePathPart(encounterName);
+                var fileName = $"{selectionPart}_{encounterPart}.trace.txt";
+                var path = Path.Combine(TraceCacheDirectory, fileName);
+                File.WriteAllText(path, traceText);
+                return path;
+            }
+            catch (Exception ex)
+            {
+                Plugin.Log?.LogWarning($"Failed to write trace cache for {encounterName}: {ex.Message}");
+                return null;
+            }
+        }
+
+        private static void AppendTraceLog(string traceText)
+        {
+            if (string.IsNullOrWhiteSpace(traceText))
+                return;
+
+            try
+            {
+                File.AppendAllText(TraceLogFilePath, traceText + Environment.NewLine);
+            }
+            catch (Exception ex)
+            {
+                Plugin.Log?.LogWarning($"Failed to append trace log: {ex.Message}");
+            }
+        }
+
+        private static string SanitizePathPart(string value)
+        {
+            if (string.IsNullOrWhiteSpace(value))
+                return "trace";
+
+            foreach (var invalid in Path.GetInvalidFileNameChars())
+                value = value.Replace(invalid, '_');
+
+            value = Regex.Replace(value, "\\s+", "_").Trim('_');
+            if (value.Length > 80)
+                value = value.Substring(0, 80);
+            return string.IsNullOrWhiteSpace(value) ? "trace" : value;
         }
 
         private static void LoadMonsterData()

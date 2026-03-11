@@ -194,6 +194,7 @@ namespace BazaarEventLogger
         private static Dictionary<string, SimUpdateCard> _opponentCards = new Dictionary<string, SimUpdateCard>();
         private static SimUpdatePlayer _playerState;
         private static SimUpdateRun _runState;
+        private static SimUpdateRunState _currentRunState;
         private static string _currentEncounterId;
         private static string _currentEncounterName;
         private static string _lastPredictionSignature;
@@ -219,6 +220,8 @@ namespace BazaarEventLogger
             // Track run state
             if (sim.Run != null)
                 _runState = sim.Run;
+            if (sim.CurrentState != null)
+                _currentRunState = sim.CurrentState;
 
             if (!string.IsNullOrEmpty(sim.CurrentState?.CurrentEncounterId))
                 UpdateCurrentEncounter(sim.CurrentState.CurrentEncounterId);
@@ -230,10 +233,13 @@ namespace BazaarEventLogger
                 {
                     var card = kvp.Value;
                     if (card == null) continue;
+                    var info = CardDatabase.GetInfo(card.InstanceId);
+                    var type = info?.Type ?? "";
+                    var isTriggeredSupport = string.Equals(type, "Skill", StringComparison.OrdinalIgnoreCase) ||
+                                             string.Equals(type, "PlayerEffect", StringComparison.OrdinalIgnoreCase);
 
-                    // Only track player's hand cards for combat
                     if (card.Placement?.Owner == BazaarGameShared.Domain.Core.Types.ECombatantId.Player &&
-                        card.Placement?.Section == BazaarGameShared.Domain.Core.Types.EInventorySection.Hand)
+                        (card.Placement?.Section == BazaarGameShared.Domain.Core.Types.EInventorySection.Hand || isTriggeredSupport))
                     {
                         _playerCards[kvp.Key] = card;
                     }
@@ -270,7 +276,11 @@ namespace BazaarEventLogger
                     else if (evt is GameSimEventCardMoved moved)
                     {
                         // If card moved out of hand, remove from tracking
-                        if (moved.ToInventory != BazaarGameShared.Domain.Core.Types.EInventorySection.Hand)
+                        var info = CardDatabase.GetInfo(moved.InstanceId);
+                        var type = info?.Type ?? "";
+                        var isTriggeredSupport = string.Equals(type, "Skill", StringComparison.OrdinalIgnoreCase) ||
+                                                 string.Equals(type, "PlayerEffect", StringComparison.OrdinalIgnoreCase);
+                        if (!isTriggeredSupport && moved.ToInventory != BazaarGameShared.Domain.Core.Types.EInventorySection.Hand)
                             _playerCards.Remove(moved.InstanceId);
                     }
                     else if (evt is GameSimEventCardSold sold)
@@ -349,6 +359,41 @@ namespace BazaarEventLogger
                 Plugin.Log?.LogError(
                     $"Battle prediction context: day={sim.Run?.Day}, hour={sim.Run?.Hour}, state={sim.CurrentState?.StateName}, selection=[{string.Join(", ", combatEncounters.Select(CardDatabase.ResolveName))}]");
             }
+        }
+
+        public static bool TryBuildCurrentPredictionContext(out GameSim syntheticState, out List<string> combatEncounters)
+        {
+            syntheticState = null;
+            combatEncounters = new List<string>();
+
+            if (_currentRunState == null ||
+                _currentRunState.StateName.ToString() != "Choice" ||
+                _currentRunState.SelectionSet == null ||
+                _currentRunState.SelectionSet.Count == 0)
+            {
+                return false;
+            }
+
+            foreach (var instanceId in _currentRunState.SelectionSet)
+            {
+                var info = CardDatabase.GetInfo(instanceId);
+                if (info != null && (info.Type.Contains("Combat") || info.Type.Contains("combat")))
+                    combatEncounters.Add(instanceId);
+                else if (instanceId.StartsWith("com_"))
+                    combatEncounters.Add(instanceId);
+            }
+
+            if (combatEncounters.Count == 0)
+                return false;
+
+            syntheticState = new GameSim
+            {
+                Player = _playerState,
+                Cards = new Dictionary<string, SimUpdateCard>(_playerCards),
+                Run = _runState,
+                CurrentState = _currentRunState
+            };
+            return true;
         }
 
         private static string BuildPredictionSignature(GameSim sim, IEnumerable<string> combatEncounters)

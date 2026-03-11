@@ -127,7 +127,7 @@ namespace BazaarEventLogger
         public List<string> UnsupportedEffects = new List<string>();
         public List<string> KeyThreats = new List<string>();
         public List<string> LossReasons = new List<string>();
-        public List<SingleSimulationResult> Samples = new List<SingleSimulationResult>();
+        public SingleSimulationResult TraceSample;
     }
 
     public class NormalizedCardProfile
