@@ -11,6 +11,8 @@ namespace BazaarEventLogger
 {
     public static class GameSimPatch
     {
+        private const bool EnableSetterFallbackPatches = false;
+
         public static void ApplyManualPatches(Harmony harmony)
         {
             PatchHandler(harmony, "TheBazaar.GameSimHandler", "HandleMessage",
@@ -18,11 +20,14 @@ namespace BazaarEventLogger
             PatchHandler(harmony, "TheBazaar.CombatSimHandler", "HandleMessage",
                 nameof(CombatSimHandlePrefix), "CombatSim");
 
-            // Fallback: patch NetMessage Data setters
-            PatchSetter(harmony, typeof(NetMessageGameSim), "Data",
-                nameof(GameSimDataSetterPostfix));
-            PatchSetter(harmony, typeof(NetMessageCombatSim), "Data",
-                nameof(CombatSimDataSetterPostfix));
+            if (EnableSetterFallbackPatches)
+            {
+                // Fallback: patch NetMessage Data setters only if handler patching fails on a future game version.
+                PatchSetter(harmony, typeof(NetMessageGameSim), "Data",
+                    nameof(GameSimDataSetterPostfix));
+                PatchSetter(harmony, typeof(NetMessageCombatSim), "Data",
+                    nameof(CombatSimDataSetterPostfix));
+            }
         }
 
         private static void PatchHandler(Harmony harmony, string typeName, string methodName,
@@ -191,6 +196,7 @@ namespace BazaarEventLogger
         private static SimUpdateRun _runState;
         private static string _currentEncounterId;
         private static string _currentEncounterName;
+        private static string _lastPredictionSignature;
 
         private static void UpdateCurrentEncounter(string encounterId)
         {
@@ -282,10 +288,23 @@ namespace BazaarEventLogger
             AccumulatePlayerState(sim);
             TryLearnEncounterFromObservedOpponent();
 
-            // Detect combat selection: state=Choice and SelectionSet contains combat encounter IDs
-            if (sim.CurrentState == null) return;
-            if (sim.CurrentState.StateName.ToString() != "Choice") return;
-            if (sim.CurrentState.SelectionSet == null || sim.CurrentState.SelectionSet.Count == 0) return;
+            if (sim.CurrentState == null)
+            {
+                _lastPredictionSignature = null;
+                return;
+            }
+
+            if (sim.CurrentState.StateName.ToString() != "Choice")
+            {
+                _lastPredictionSignature = null;
+                return;
+            }
+
+            if (sim.CurrentState.SelectionSet == null || sim.CurrentState.SelectionSet.Count == 0)
+            {
+                _lastPredictionSignature = null;
+                return;
+            }
 
             // Check if selection contains combat encounters (com_ prefix or CombatEncounter type)
             var combatEncounters = new List<string>();
@@ -302,7 +321,15 @@ namespace BazaarEventLogger
                 }
             }
 
-            if (combatEncounters.Count == 0) return;
+            if (combatEncounters.Count == 0)
+            {
+                _lastPredictionSignature = null;
+                return;
+            }
+
+            var predictionSignature = BuildPredictionSignature(sim, combatEncounters);
+            if (string.Equals(_lastPredictionSignature, predictionSignature, StringComparison.Ordinal))
+                return;
 
             // Build a synthetic GameSim with accumulated player state
             var syntheticState = new GameSim();
@@ -310,6 +337,7 @@ namespace BazaarEventLogger
             syntheticState.Cards = new Dictionary<string, SimUpdateCard>(_playerCards);
             syntheticState.Run = _runState ?? sim.Run;
             syntheticState.CurrentState = sim.CurrentState;
+            _lastPredictionSignature = predictionSignature;
 
             try
             {
@@ -318,7 +346,24 @@ namespace BazaarEventLogger
             catch (Exception ex)
             {
                 Plugin.Log?.LogError($"Battle prediction error: {ex}");
+                Plugin.Log?.LogError(
+                    $"Battle prediction context: day={sim.Run?.Day}, hour={sim.Run?.Hour}, state={sim.CurrentState?.StateName}, selection=[{string.Join(", ", combatEncounters.Select(CardDatabase.ResolveName))}]");
             }
+        }
+
+        private static string BuildPredictionSignature(GameSim sim, IEnumerable<string> combatEncounters)
+        {
+            var state = sim?.CurrentState;
+            var run = sim?.Run;
+            var selection = string.Join("|", combatEncounters
+                .Where(id => !string.IsNullOrEmpty(id))
+                .OrderBy(id => id, StringComparer.OrdinalIgnoreCase));
+            return string.Join("::",
+                run?.Day.ToString() ?? "?",
+                run?.Hour.ToString() ?? "?",
+                state?.StateName.ToString() ?? "?",
+                state?.CurrentEncounterId ?? "?",
+                selection);
         }
 
         private static void TryLearnEncounterFromObservedOpponent()

@@ -176,7 +176,10 @@ namespace BazaarEventLogger
                     Value = effectObj["value"]?.Value<int?>() ?? 0,
                     Target = effectObj["target"]?.ToString() ?? "opponent",
                     IsPassive = effectObj["passive"]?.Value<bool>() ?? false,
-                    Source = effectObj["source"]?.ToString() ?? "export"
+                    Source = effectObj["source"]?.ToString() ?? "export",
+                    Trigger = effectObj["trigger"]?.ToString() ?? (effectObj["passive"]?.Value<bool>() ?? false ? SimEffectTriggers.Passive : SimEffectTriggers.OnCardFired),
+                    RequiresOwnerEnraged = effectObj["requiresOwnerEnraged"]?.Value<bool>() ?? false,
+                    RequiresOwnerNotEnraged = effectObj["requiresOwnerNotEnraged"]?.Value<bool>() ?? false
                 };
 
                 if (effect.Value > 0 || effect.IsPassive)
