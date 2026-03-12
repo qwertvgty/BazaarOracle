@@ -126,6 +126,17 @@ namespace BazaarEventLogger
         public List<SimulationTraceEntry> Trace = new List<SimulationTraceEntry>();
     }
 
+    public class PendingSimEffect
+    {
+        public int DueTimeMs;
+        public SimEffectSpec Effect;
+        public SimCombatantSnapshot Owner;
+        public SimCombatantSnapshot Target;
+        public SimCardSnapshot SourceCard;
+        public SimCardSnapshot TriggerSourceCard;
+        public string OwnerLabel;
+    }
+
     public class BatchSimulationResult
     {
         public string EncounterName;

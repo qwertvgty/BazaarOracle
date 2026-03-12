@@ -207,12 +207,14 @@ namespace BazaarEventLogger.Tests
             TestFreezeStopsCooldownOnly();
             TestDisabledCardDoesNotReTrigger();
             TestFreezeTargetBuffIncreasesFrozenCards();
+            TestPositionalRightCardTargetsNeighbor();
             TestAllTargetBuffAppliesToEveryCard();
             TestPlayerAttributeModificationCanStripShield();
             TestNormalizerSupportsCardCountScaledPassiveAuras();
             TestPassiveCardCountScaledRegenAuraAppliesBeforeCombat();
             TestFightEndedEffectsDoNotApplyDuringCombat();
             TestFightStartedRandomTargetCountCanAffectMultipleCards();
+            TestItemUsedEffectsResolveNextTick();
             TestItemUsedEffectsCanBuffTriggerNeighbors();
         }
 
@@ -398,6 +400,41 @@ namespace BazaarEventLogger.Tests
                 (state.Contains("Freeze=1000", StringComparison.Ordinal) ||
                  state.Contains("Freeze=950", StringComparison.Ordinal)));
             Assert(frozenCards >= 2, $"Expected FreezeTargets buff to freeze at least 2 opponent cards. Actual frozen cards: {frozenCards}");
+        }
+
+        private static void TestPositionalRightCardTargetsNeighbor()
+        {
+            var squirrel = new SimCardSnapshot
+            {
+                Name = "Flying Squirrel",
+                CooldownMax = 1000,
+                CurrentCooldown = 1000,
+                Tags = new List<string>(),
+                Multicast = 1,
+                CoverageScore = 1.0,
+                Effects = new List<SimEffectSpec>
+                {
+                    new SimEffectSpec
+                    {
+                        Type = "haste",
+                        Value = 1000,
+                        Target = "right_self_card"
+                    }
+                }
+            };
+
+            var spear = NewCard("Spear", 4000, "damage", 20);
+            var player = NewCombatant("Player", 100, squirrel, spear);
+            var opponent = NewCombatant("Opponent", 100, NewCard("Dummy", 999999, "damage", 1));
+
+            var result = SimulationEngine.RunOnce(player, opponent, 3);
+            var firstTrigger = result.Trace.FirstOrDefault(entry =>
+                entry.Events.Any(evt => evt.Contains("Player:trigger:Flying Squirrel")));
+            Assert(firstTrigger != null, "Expected Flying Squirrel to trigger.");
+
+            var spearState = firstTrigger.CardStates.FirstOrDefault(state => state.StartsWith("P:Spear:", StringComparison.Ordinal));
+            Assert(spearState != null && (spearState.Contains("Haste=1000", StringComparison.Ordinal) || spearState.Contains("Haste=950", StringComparison.Ordinal)),
+                $"Expected right neighbor Spear to receive haste. Actual state: {spearState}");
         }
 
         private static void TestAllTargetBuffAppliesToEveryCard()
@@ -709,6 +746,45 @@ namespace BazaarEventLogger.Tests
             var opponent = NewCombatant("Opponent", 221, NewWeaponCard("Dummy", 999999, "damage", 1));
             var result = SimulationEngine.RunOnce(player, opponent, 7);
             Assert(result.DurationMs < baseline.DurationMs, "Neighbor-targeted item-used effects should buff cards adjacent to the triggering item.");
+        }
+
+        private static void TestItemUsedEffectsResolveNextTick()
+        {
+            var trigger = NewWeaponCard("Trigger", 1000, "damage", 1);
+            trigger.Size = "Large";
+            var followUp = NewWeaponCard("Follow Up", 1050, "damage", 40);
+            var player = NewCombatant("Player", 100, trigger, followUp);
+            player.Cards.Add(new SimCardSnapshot
+            {
+                Name = "Delay Test",
+                Effects = new List<SimEffectSpec>
+                {
+                    new SimEffectSpec
+                    {
+                        Type = "haste",
+                        Value = 1000,
+                        Target = "right_self_card",
+                        Trigger = SimEffectTriggers.OnItemUsed,
+                        TriggerCardSizes = new List<string> { "Large" },
+                        UseTriggerSourceForTargeting = true
+                    }
+                }
+            });
+
+            var opponent = NewCombatant("Opponent", 100, NewWeaponCard("Dummy", 999999, "damage", 1));
+            var result = SimulationEngine.RunOnce(player, opponent, 11);
+
+            var triggerTick = result.Trace.FirstOrDefault(entry =>
+                entry.Summary.Contains("Player:trigger:Trigger", StringComparison.Ordinal));
+            Assert(triggerTick != null, "Expected Trigger to fire.");
+            Assert(
+                !triggerTick.Events.Any(evt => evt.Contains("Delay Test:haste=1000->right_self_card", StringComparison.Ordinal)),
+                "Item-used effect should not resolve in the same tick as the triggering card.");
+
+            var delayedTick = result.Trace.FirstOrDefault(entry =>
+                entry.Summary.Contains("Delay Test:haste=1000->right_self_card", StringComparison.Ordinal));
+            Assert(delayedTick != null, "Expected delayed item-used effect to resolve on a later tick.");
+            Assert(delayedTick.TimeMs == triggerTick.TimeMs + 50, $"Expected delayed item-used effect on next tick. Trigger={triggerTick.TimeMs}, delayed={delayedTick.TimeMs}");
         }
 
         private static SimCombatantSnapshot NewCombatant(string name, int health, params SimCardSnapshot[] cards)

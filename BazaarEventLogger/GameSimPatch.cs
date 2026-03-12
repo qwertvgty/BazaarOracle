@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Reflection;
+using BazaarGameShared.Domain.Core.Types;
 using BazaarGameShared.Infra.Messages;
 using BazaarGameShared.Infra.Messages.CombatSimEvents;
 using BazaarGameShared.Infra.Messages.GameSimEvents;
@@ -416,12 +417,65 @@ namespace BazaarEventLogger
             var selection = string.Join("|", combatEncounters
                 .Where(id => !string.IsNullOrEmpty(id))
                 .OrderBy(id => id, StringComparer.OrdinalIgnoreCase));
+            var playerFingerprint = BuildPlayerPredictionFingerprint();
             return string.Join("::",
                 run?.Day.ToString() ?? "?",
                 run?.Hour.ToString() ?? "?",
                 state?.StateName.ToString() ?? "?",
                 state?.CurrentEncounterId ?? "?",
-                selection);
+                selection,
+                playerFingerprint);
+        }
+
+        private static string BuildPlayerPredictionFingerprint()
+        {
+            var playerState = _playerState?.Attributes == null
+                ? "player:?"
+                : string.Join(",",
+                    _playerState.Attributes
+                        .OrderBy(kvp => kvp.Key.ToString(), StringComparer.OrdinalIgnoreCase)
+                        .Select(kvp => $"{kvp.Key}={kvp.Value}"));
+
+            var cards = _playerCards.Values
+                .Where(card => card != null)
+                .OrderBy(GetPredictionCardSortKey, StringComparer.OrdinalIgnoreCase)
+                .Select(BuildPredictionCardFingerprint);
+
+            return $"{playerState}||{string.Join("|", cards)}";
+        }
+
+        private static string GetPredictionCardSortKey(SimUpdateCard card)
+        {
+            if (card == null)
+                return string.Empty;
+
+            return string.Join(":",
+                card.Placement?.Section?.ToString() ?? "?",
+                card.Placement?.Socket?.ToString() ?? "?",
+                card.InstanceId ?? "?");
+        }
+
+        private static string BuildPredictionCardFingerprint(SimUpdateCard card)
+        {
+            if (card == null)
+                return "?";
+
+            var attrs = card.Attributes == null
+                ? string.Empty
+                : string.Join(",",
+                    card.Attributes
+                        .Where(kvp => kvp.Value.DeltaType == EAttributeDeltaType.Update)
+                        .OrderBy(kvp => kvp.Key.ToString(), StringComparer.OrdinalIgnoreCase)
+                        .Select(kvp => $"{kvp.Key}={kvp.Value.Value}"));
+            var templateId = CardDatabase.GetInfo(card.InstanceId)?.Id ?? "?";
+            return string.Join(":",
+                card.InstanceId ?? "?",
+                templateId,
+                card.Tier?.ToString() ?? "?",
+                card.State.ToString(),
+                card.Placement?.Section?.ToString() ?? "?",
+                card.Placement?.Socket?.ToString() ?? "?",
+                attrs);
         }
 
         private static void TryLearnEncounterFromObservedOpponent()

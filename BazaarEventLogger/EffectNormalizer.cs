@@ -711,6 +711,16 @@ namespace BazaarEventLogger
                     return "adjacent_opponent_cards";
                 return "adjacent_self_cards";
             }
+            if (type.Contains("CardPositional") &&
+                (string.Equals(targetMode, "RightCard", StringComparison.OrdinalIgnoreCase) ||
+                 string.Equals(targetMode, "LeftCard", StringComparison.OrdinalIgnoreCase)))
+            {
+                var side = section.Contains("Opponent", StringComparison.OrdinalIgnoreCase) ? "opponent" : "self";
+                var direction = string.Equals(targetMode, "RightCard", StringComparison.OrdinalIgnoreCase)
+                    ? "right"
+                    : "left";
+                return $"{direction}_{side}{targetSuffix}_card";
+            }
             if (type.Contains("CardXMost"))
             {
                 var side = section.Contains("Opponent") ? "opponent" : "self";

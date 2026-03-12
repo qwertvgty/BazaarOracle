@@ -83,6 +83,7 @@ namespace BazaarEventLogger
             var rng = new Random(seed);
             var timeMs = 0;
             var trace = captureTrace ? new List<SimulationTraceEntry>() : null;
+            var pendingEffects = new List<PendingSimEffect>();
             TriggerEffects(player, opponent, rng, SimEffectTriggers.OnFightStarted, events: null, ownerLabel: "Player");
             TriggerEffects(opponent, player, rng, SimEffectTriggers.OnFightStarted, events: null, ownerLabel: "Opponent");
             ApplyPassiveEffects(player, opponent, rng);
@@ -111,8 +112,17 @@ namespace BazaarEventLogger
                     break;
                 }
 
-                ProcessCards(player, opponent, rng, events, "Player");
-                ProcessCards(opponent, player, rng, events, "Opponent");
+                ProcessPendingEffects(pendingEffects, timeMs, rng, events);
+                if (player.Health <= 0 || opponent.Health <= 0)
+                {
+                    events?.Add("combat_end:pending_effect");
+                    if (captureTrace)
+                        RecordTrace(trace, timeMs, player, opponent, string.Join(" | ", events), events);
+                    break;
+                }
+
+                ProcessCards(player, opponent, rng, events, "Player", pendingEffects, timeMs);
+                ProcessCards(opponent, player, rng, events, "Opponent", pendingEffects, timeMs);
                 if (captureTrace)
                     RecordTrace(trace, timeMs, player, opponent, events == null || events.Count == 0 ? "idle" : string.Join(" | ", events), events);
             }
@@ -128,7 +138,14 @@ namespace BazaarEventLogger
             };
         }
 
-        private static void ProcessCards(SimCombatantSnapshot owner, SimCombatantSnapshot target, Random rng, List<string> events, string ownerLabel)
+        private static void ProcessCards(
+            SimCombatantSnapshot owner,
+            SimCombatantSnapshot target,
+            Random rng,
+            List<string> events,
+            string ownerLabel,
+            List<PendingSimEffect> pendingEffects,
+            int timeMs)
         {
             foreach (var card in owner.Cards)
             {
@@ -151,7 +168,7 @@ namespace BazaarEventLogger
                 for (var i = 0; i < castCount; i++)
                     ExecuteCard(card, owner, target, rng, events, ownerLabel, i);
 
-                TriggerItemUsedEffects(owner, target, card, rng, events, ownerLabel);
+                TriggerItemUsedEffects(owner, target, card, rng, events, ownerLabel, pendingEffects, timeMs);
 
                 card.CurrentCooldown = GetEffectiveCooldownMax(card);
                 events?.Add($"{ownerLabel}:reset_cd:{card.Name}={card.CurrentCooldown}");
@@ -600,7 +617,9 @@ namespace BazaarEventLogger
             SimCardSnapshot usedCard,
             Random rng,
             List<string> events,
-            string ownerLabel)
+            string ownerLabel,
+            List<PendingSimEffect> pendingEffects,
+            int timeMs)
         {
             foreach (var card in owner.Cards)
             {
@@ -609,8 +628,43 @@ namespace BazaarEventLogger
                     if (!ShouldActivateEffect(effect, owner, card) || !MatchesUsedCardTrigger(effect, usedCard))
                         continue;
 
-                    ApplyEffect(effect, owner, target, rng, card, events, ownerLabel, triggerSourceCard: usedCard);
+                    pendingEffects.Add(new PendingSimEffect
+                    {
+                        DueTimeMs = timeMs + TickMs,
+                        Effect = effect,
+                        Owner = owner,
+                        Target = target,
+                        SourceCard = card,
+                        TriggerSourceCard = usedCard,
+                        OwnerLabel = ownerLabel
+                    });
                 }
+            }
+        }
+
+        private static void ProcessPendingEffects(List<PendingSimEffect> pendingEffects, int timeMs, Random rng, List<string> events)
+        {
+            if (pendingEffects.Count == 0)
+                return;
+
+            var dueEffects = pendingEffects
+                .Where(entry => entry.DueTimeMs <= timeMs)
+                .ToList();
+            if (dueEffects.Count == 0)
+                return;
+
+            pendingEffects.RemoveAll(entry => entry.DueTimeMs <= timeMs);
+            foreach (var entry in dueEffects)
+            {
+                ApplyEffect(
+                    entry.Effect,
+                    entry.Owner,
+                    entry.Target,
+                    rng,
+                    entry.SourceCard,
+                    events,
+                    entry.OwnerLabel,
+                    triggerSourceCard: entry.TriggerSourceCard);
             }
         }
 
@@ -1173,6 +1227,8 @@ namespace BazaarEventLogger
                 case "adjacent_self_cards":
                 case "all_self_weapon_cards":
                 case "all_self_nonweapon_cards":
+                case "left_self_card":
+                case "right_self_card":
                 case "leftmost_self_weapon_card":
                 case "rightmost_self_weapon_card":
                     pool = owner.Cards;
@@ -1183,6 +1239,8 @@ namespace BazaarEventLogger
                 case "adjacent_opponent_cards":
                 case "all_opponent_weapon_cards":
                 case "all_opponent_nonweapon_cards":
+                case "left_opponent_card":
+                case "right_opponent_card":
                 case "leftmost_opponent_weapon_card":
                 case "rightmost_opponent_weapon_card":
                     pool = opponent.Cards;
@@ -1201,6 +1259,12 @@ namespace BazaarEventLogger
 
             if (targetMode == "adjacent_self_cards" || targetMode == "adjacent_opponent_cards")
                 return ResolveAdjacentCards(filteredPool, sourceCard);
+
+            if (targetMode == "left_self_card" || targetMode == "left_opponent_card")
+                return ResolveDirectionalCard(filteredPool, sourceCard, -1);
+
+            if (targetMode == "right_self_card" || targetMode == "right_opponent_card")
+                return ResolveDirectionalCard(filteredPool, sourceCard, 1);
 
             if (targetMode == "leftmost_self_weapon_card" || targetMode == "leftmost_opponent_weapon_card")
                 return filteredPool.Take(1).ToList();
@@ -1237,6 +1301,18 @@ namespace BazaarEventLogger
             if (anchor + 1 < cards.Count)
                 result.Add(cards[anchor + 1]);
             return result;
+        }
+
+        private static List<SimCardSnapshot> ResolveDirectionalCard(IList<SimCardSnapshot> cards, SimCardSnapshot sourceCard, int offset)
+        {
+            if (cards == null || cards.Count == 0 || sourceCard == null || !cards.Contains(sourceCard))
+                return new List<SimCardSnapshot>();
+
+            var targetIndex = cards.IndexOf(sourceCard) + offset;
+            if (targetIndex < 0 || targetIndex >= cards.Count)
+                return new List<SimCardSnapshot>();
+
+            return new List<SimCardSnapshot> { cards[targetIndex] };
         }
 
         private static bool IsMultiTargetScope(string scope)
