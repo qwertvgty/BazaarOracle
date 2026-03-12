@@ -31,6 +31,9 @@ bazhanixiang/
 │   ├── BattleSimulator.cs          # 战斗模拟引擎
 │   └── tools/
 │       └── export_monsters.py      # 野怪数据导出脚本 (生成 monster_data.json)
+├── BazaarEventLogger.Tests/        # 离线回放 / 回归测试 runner
+│   ├── BazaarEventLogger.Tests.csproj
+│   └── Program.cs
 ├── BazaarGameShared/               # 游戏 DLL 反编译代码 (仅供参考)
 │   └── ...
 └── README.md
@@ -70,6 +73,84 @@ dotnet build -c Release
 | `BepInEx/GameSimEvents.log` | 游戏流程事件 |
 | `BepInEx/CombatSimEvents.log` | 战斗帧数据 |
 | `BepInEx/BattleSimulator.log` | 战斗预测结果 |
+
+## 测试与回归
+
+推荐把“游戏内导出 + 本地离线回放”作为标准调试流程。野怪模板固定时，不需要反复进游戏复现同一场战斗。
+
+### 1. 游戏内导出调试包
+
+1. 进入野怪选择界面。
+2. 打开调试 UI。
+3. 选择目标野怪，点击“导出当前选中调试包”。
+
+导出目录默认在：
+
+```text
+<游戏目录>/BepInEx/DebugExports/<时间戳>_<EncounterName>/
+```
+
+常用文件：
+
+| 文件 | 内容 |
+|------|------|
+| `summary.txt` | 当前模拟摘要 |
+| `player_snapshot.json` | 玩家快照 |
+| `selected_encounter.json` | 当前选中的野怪快照 |
+| `selected_trace.txt` | 当前选中样本的详细时间轴 |
+| `combat_tail.log` | 战斗日志尾部片段 |
+| `gamesim_tail.log` | GameSim 日志尾部片段 |
+
+### 2. 运行离线回放
+
+离线 runner 直接吃导出的目录，不依赖游戏运行。
+
+```powershell
+dotnet run --project BazaarEventLogger.Tests -- offline "E:\SteamLibrary\steamapps\common\The Bazaar\BepInEx\DebugExports\20260312_073256_Trashtown Mayor" 10 1337 1
+```
+
+参数顺序：
+
+| 参数 | 含义 | 默认值 |
+|------|------|--------|
+| `offline` | 固定子命令 | 无 |
+| `export_dir` | 调试导出目录 | 无 |
+| `runs` | 模拟次数 | `10` |
+| `seedBase` | 起始随机种子 | `1337` |
+| `traceSamples` | 保留详细时间轴的样本数 | `1` |
+
+离线 runner 会自动：
+- 从导出目录向上查找游戏目录下的 `TheBazaar_Data/StreamingAssets/cards.json`
+- 用当前代码重新归一化玩家和野怪卡牌效果
+- 输出新的离线结果，而不是复用旧导出里的 stale `Effects`
+
+输出文件：
+
+| 文件 | 内容 |
+|------|------|
+| `offline_summary.txt` | 离线模拟摘要 |
+| `offline_result.json` | 结构化结果，适合后续做回归对比 |
+| `offline_trace.txt` | 一份详细时间轴 |
+
+如果原导出目录不可写，输出会回退到：
+
+```text
+BazaarEventLogger.Tests/bin/<Configuration>/net8.0/offline-output/<导出目录名>/
+```
+
+### 3. 推荐排查流程
+
+1. 先在游戏里导出一份问题对局。
+2. 用离线 runner 重跑，确认问题可稳定复现。
+3. 修改模拟规则后，重复跑同一个导出目录。
+4. 对比 `offline_summary.txt` 和 `offline_trace.txt`，确认结果是否朝正确方向变化。
+5. 只有在离线结果接近预期后，再回游戏里验证插件实际表现。
+
+### 4. 典型用途
+
+- 某场野怪你确定应为 `100%` 胜率，但当前模拟不是：直接保留该导出目录，作为回归样本。
+- 修改 Rage / Enrage / Flying / Crit / Trigger 规则后：重复跑同一导出目录，观察结果是否改善。
+- 需要把问题发给开发者排查：优先发完整导出目录，而不是手工摘日志片段。
 
 ## 技术细节
 
