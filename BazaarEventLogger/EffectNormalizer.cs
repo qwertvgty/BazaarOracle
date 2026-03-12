@@ -213,7 +213,7 @@ namespace BazaarEventLogger
                     return ApplyMetadata(effects, metadata);
 
                 case "TActionPlayerRageApply":
-                    AddEffect(effects, "rage", Math.Abs(ResolveActionValue(action, attrs, "RageAmount", 1)), GetTargetMode(action["Target"] as JObject, "self"), actionType);
+                    AddEffect(effects, "rage", Math.Abs(ResolveActionValue(action, attrs, "RageApplyAmount", 1)), GetTargetMode(action["Target"] as JObject, "self"), actionType);
                     return ApplyMetadata(effects, metadata);
 
                 case "TActionPlayerModifyAttribute":

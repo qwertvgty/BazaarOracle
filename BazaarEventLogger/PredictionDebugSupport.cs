@@ -64,8 +64,11 @@ namespace BazaarEventLogger
             }
 
             File.WriteAllText(
-                Path.Combine(exportDir, "CombatSimEvents.tail.log"),
-                ReadTailSafe(Path.Combine(Paths.BepInExRootPath, "CombatSimEvents.log"), 600));
+                Path.Combine(exportDir, "CombatSimEvents.log"),
+                CombatLogger.GetRecentCombatsText());
+            File.WriteAllText(
+                Path.Combine(exportDir, "CombatSimEvents.jsonl"),
+                CombatLoggerJsonl.GetRecentCombatsJsonl());
             File.WriteAllText(
                 Path.Combine(exportDir, "GameSimEvents.tail.log"),
                 ReadTailSafe(Path.Combine(Paths.BepInExRootPath, "GameSimEvents.log"), 600));

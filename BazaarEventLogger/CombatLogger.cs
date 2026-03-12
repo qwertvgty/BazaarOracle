@@ -13,6 +13,22 @@ namespace BazaarEventLogger
         public static string LogFilePath { get; private set; }
         private static int _combatCount;
 
+        private const int RecentCombatCapacity = 5;
+        private static readonly Queue<string> RecentCombats = new Queue<string>();
+
+        /// <summary>
+        /// Returns the full text of the last N complete combat logs (most recent last).
+        /// </summary>
+        public static string GetRecentCombatsText()
+        {
+            lock (RecentCombats)
+            {
+                return RecentCombats.Count == 0
+                    ? string.Empty
+                    : string.Join(Environment.NewLine, RecentCombats);
+            }
+        }
+
         public static void Initialize()
         {
             LogFilePath = Path.Combine(Paths.BepInExRootPath, "CombatSimEvents.log");
@@ -88,9 +104,18 @@ namespace BazaarEventLogger
 
             sb.AppendLine($"╚══════════════════════════════════════════════════════════════");
 
+            var combatText = sb.ToString();
+
+            lock (RecentCombats)
+            {
+                RecentCombats.Enqueue(combatText);
+                while (RecentCombats.Count > RecentCombatCapacity)
+                    RecentCombats.Dequeue();
+            }
+
             try
             {
-                File.AppendAllText(LogFilePath, sb.ToString());
+                File.AppendAllText(LogFilePath, combatText);
             }
             catch (Exception ex)
             {

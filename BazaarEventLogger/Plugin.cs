@@ -27,6 +27,7 @@ namespace BazaarEventLogger
             // Initialize loggers
             EventLogger.Initialize();
             CombatLogger.Initialize();
+            CombatLoggerJsonl.Initialize();
             BattleSimulator.Initialize();
             EnsureDebugUi();
             DontDestroyOnLoad(gameObject);

@@ -98,8 +98,9 @@ dotnet build -c Release
 | `player_snapshot.json` | 玩家快照 |
 | `selected_encounter.json` | 当前选中的野怪快照 |
 | `selected_trace.txt` | 当前选中样本的详细时间轴 |
-| `combat_tail.log` | 战斗日志尾部片段 |
-| `gamesim_tail.log` | GameSim 日志尾部片段 |
+| `CombatSimEvents.log` | 最近 5 场完整真实战斗日志（人类可读） |
+| `CombatSimEvents.jsonl` | 最近 5 场完整真实战斗日志（结构化 JSON Lines，便于程序分析） |
+| `GameSimEvents.tail.log` | GameSim 日志尾部片段 |
 
 ### 2. 运行离线回放
 

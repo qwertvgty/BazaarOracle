@@ -146,6 +146,7 @@ namespace BazaarEventLogger
                     if (sim != null)
                     {
                         CombatLogger.LogCombatSim(sim, msgId);
+                        CombatLoggerJsonl.LogCombatSim(sim, msgId);
                         return;
                     }
                 }
@@ -179,7 +180,10 @@ namespace BazaarEventLogger
             try
             {
                 if (value != null)
+                {
                     CombatLogger.LogCombatSim(value, __instance?.MessageId ?? "setter");
+                    CombatLoggerJsonl.LogCombatSim(value, __instance?.MessageId ?? "setter");
+                }
             }
             catch (Exception ex)
             {
