@@ -10,22 +10,30 @@ namespace BazaarEventLogger
 {
     public static class CombatLogger
     {
+        private sealed class RecentCombatRecord
+        {
+            public string EncounterId;
+            public string EncounterName;
+            public string Payload;
+        }
+
         public static string LogFilePath { get; private set; }
         private static int _combatCount;
 
         private const int RecentCombatCapacity = 5;
-        private static readonly Queue<string> RecentCombats = new Queue<string>();
+        private static readonly Queue<RecentCombatRecord> RecentCombats = new Queue<RecentCombatRecord>();
 
         /// <summary>
         /// Returns the full text of the last N complete combat logs (most recent last).
         /// </summary>
-        public static string GetRecentCombatsText()
+        public static string GetRecentCombatsText(string encounterId = null)
         {
             lock (RecentCombats)
             {
-                return RecentCombats.Count == 0
+                var records = FilterRecentCombats(encounterId).ToList();
+                return records.Count == 0
                     ? string.Empty
-                    : string.Join(Environment.NewLine, RecentCombats);
+                    : string.Join(Environment.NewLine, records.Select(record => record.Payload));
             }
         }
 
@@ -37,7 +45,7 @@ namespace BazaarEventLogger
             _combatCount = 0;
         }
 
-        public static void LogCombatSim(CombatSim sim, string messageId)
+        public static void LogCombatSim(CombatSim sim, string messageId, string encounterId = null, string encounterName = null)
         {
             _combatCount++;
             var sb = new StringBuilder();
@@ -45,6 +53,8 @@ namespace BazaarEventLogger
             sb.AppendLine();
             sb.AppendLine($"╔══════════════════════════════════════════════════════════════");
             sb.AppendLine($"║ Combat #{_combatCount} | MsgID: {messageId} | {DateTime.Now:HH:mm:ss.fff}");
+            if (!string.IsNullOrWhiteSpace(encounterId))
+                sb.AppendLine($"║ Encounter: {encounterName ?? encounterId} ({encounterId})");
             sb.AppendLine($"║ Winner: {sim.Winner}, Loser: {sim.Loser}");
             sb.AppendLine($"║ Frames: {sim.Frames?.Count ?? 0}");
             sb.AppendLine($"╠══════════════════════════════════════════════════════════════");
@@ -108,7 +118,12 @@ namespace BazaarEventLogger
 
             lock (RecentCombats)
             {
-                RecentCombats.Enqueue(combatText);
+                RecentCombats.Enqueue(new RecentCombatRecord
+                {
+                    EncounterId = encounterId,
+                    EncounterName = encounterName,
+                    Payload = combatText
+                });
                 while (RecentCombats.Count > RecentCombatCapacity)
                     RecentCombats.Dequeue();
             }
@@ -121,6 +136,13 @@ namespace BazaarEventLogger
             {
                 Plugin.Log?.LogError($"Failed to write combat log: {ex.Message}");
             }
+        }
+
+        private static IEnumerable<RecentCombatRecord> FilterRecentCombats(string encounterId)
+        {
+            return string.IsNullOrWhiteSpace(encounterId)
+                ? RecentCombats
+                : RecentCombats.Where(record => string.Equals(record.EncounterId, encounterId, StringComparison.OrdinalIgnoreCase));
         }
 
         private static bool HasPlayerChanges(CombatSimPlayerUpdate update)

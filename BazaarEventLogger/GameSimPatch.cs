@@ -145,8 +145,9 @@ namespace BazaarEventLogger
 
                     if (sim != null)
                     {
-                        CombatLogger.LogCombatSim(sim, msgId);
-                        CombatLoggerJsonl.LogCombatSim(sim, msgId);
+                        TryGetCurrentEncounterContext(out var encounterId, out var encounterName);
+                        CombatLogger.LogCombatSim(sim, msgId, encounterId, encounterName);
+                        CombatLoggerJsonl.LogCombatSim(sim, msgId, encounterId, encounterName);
                         return;
                     }
                 }
@@ -181,8 +182,9 @@ namespace BazaarEventLogger
             {
                 if (value != null)
                 {
-                    CombatLogger.LogCombatSim(value, __instance?.MessageId ?? "setter");
-                    CombatLoggerJsonl.LogCombatSim(value, __instance?.MessageId ?? "setter");
+                    TryGetCurrentEncounterContext(out var encounterId, out var encounterName);
+                    CombatLogger.LogCombatSim(value, __instance?.MessageId ?? "setter", encounterId, encounterName);
+                    CombatLoggerJsonl.LogCombatSim(value, __instance?.MessageId ?? "setter", encounterId, encounterName);
                 }
             }
             catch (Exception ex)
@@ -398,6 +400,13 @@ namespace BazaarEventLogger
                 CurrentState = _currentRunState
             };
             return true;
+        }
+
+        public static bool TryGetCurrentEncounterContext(out string encounterId, out string encounterName)
+        {
+            encounterId = _currentEncounterId;
+            encounterName = _currentEncounterName;
+            return !string.IsNullOrWhiteSpace(encounterId);
         }
 
         private static string BuildPredictionSignature(GameSim sim, IEnumerable<string> combatEncounters)

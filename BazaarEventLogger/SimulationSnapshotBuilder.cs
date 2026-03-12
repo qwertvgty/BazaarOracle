@@ -69,6 +69,10 @@ namespace BazaarEventLogger
                 .SelectMany(c => c.UnsupportedEffects)
                 .Distinct(StringComparer.OrdinalIgnoreCase)
                 .ToList();
+            snapshot.CoverageNotes = snapshot.Cards
+                .SelectMany(c => c.CoverageNotes)
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToList();
             return snapshot;
         }
 
@@ -127,6 +131,10 @@ namespace BazaarEventLogger
                 .SelectMany(c => c.UnsupportedEffects)
                 .Distinct(StringComparer.OrdinalIgnoreCase)
                 .ToList();
+            snapshot.CoverageNotes = snapshot.Cards
+                .SelectMany(c => c.CoverageNotes)
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToList();
             return snapshot;
         }
 
@@ -161,6 +169,8 @@ namespace BazaarEventLogger
             snapshot.CurrentCooldown = Math.Max(0, snapshot.CooldownMax);
             if (snapshot.Effects.Count == 0)
                 snapshot.UnsupportedEffects.Add("runtime:no_effects");
+
+            snapshot.CoverageNotes = SimulationCoverageAnalyzer.AnalyzeCard(snapshot);
 
             return snapshot;
         }
@@ -237,6 +247,7 @@ namespace BazaarEventLogger
                 return null;
 
             snapshot.CurrentCooldown = Math.Max(0, snapshot.CooldownMax);
+            snapshot.CoverageNotes = SimulationCoverageAnalyzer.AnalyzeCard(snapshot);
             return snapshot;
         }
 

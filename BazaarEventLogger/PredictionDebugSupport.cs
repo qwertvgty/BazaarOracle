@@ -61,48 +61,32 @@ namespace BazaarEventLogger
                 CopyTraceIfPresent(
                     selectedEncounter.TraceFilePath,
                     Path.Combine(exportDir, "selected_trace.txt"));
-            }
 
-            File.WriteAllText(
-                Path.Combine(exportDir, "CombatSimEvents.log"),
-                CombatLogger.GetRecentCombatsText());
-            File.WriteAllText(
-                Path.Combine(exportDir, "CombatSimEvents.jsonl"),
-                CombatLoggerJsonl.GetRecentCombatsJsonl());
-            File.WriteAllText(
-                Path.Combine(exportDir, "GameSimEvents.tail.log"),
-                ReadTailSafe(Path.Combine(Paths.BepInExRootPath, "GameSimEvents.log"), 600));
-            File.WriteAllText(
-                Path.Combine(exportDir, "BattleSimulator.log.tail.txt"),
-                ReadTailSafe(BattleSimulator.LogFilePath, 300));
-            File.WriteAllText(
-                Path.Combine(exportDir, "BattleSimulatorTicks.log.tail.txt"),
-                ReadTailSafe(BattleSimulator.TraceLogFilePath, 400));
-
-            return exportDir;
-        }
-
-        private static string ReadTailSafe(string path, int lineCount)
-        {
-            try
-            {
-                if (string.IsNullOrEmpty(path) || !File.Exists(path))
-                    return string.Empty;
-
-                var queue = new Queue<string>();
-                foreach (var line in File.ReadLines(path))
+                var matchedCombatText = CombatLogger.GetRecentCombatsText(selectedEncounter.EncounterId);
+                if (!string.IsNullOrWhiteSpace(matchedCombatText))
                 {
-                    queue.Enqueue(line);
-                    if (queue.Count > lineCount)
-                        queue.Dequeue();
+                    File.WriteAllText(
+                        Path.Combine(exportDir, "CombatSimEvents.log"),
+                        matchedCombatText);
                 }
 
-                return string.Join(Environment.NewLine, queue);
+                var matchedCombatJsonl = CombatLoggerJsonl.GetRecentCombatsJsonl(selectedEncounter.EncounterId);
+                if (!string.IsNullOrWhiteSpace(matchedCombatJsonl))
+                {
+                    File.WriteAllText(
+                        Path.Combine(exportDir, "CombatSimEvents.jsonl"),
+                        matchedCombatJsonl);
+                }
+
+                File.WriteAllText(
+                    Path.Combine(exportDir, "coverage_report.txt"),
+                    SimulationReporter.FormatCoverageReport(
+                        session.PlayerSnapshot,
+                        selectedEncounter.EncounterSnapshot,
+                        selectedEncounter.Result));
             }
-            catch (Exception ex)
-            {
-                return $"Failed to read {path}: {ex}";
-            }
+
+            return exportDir;
         }
 
         private static string SanitizeFileName(string value)
