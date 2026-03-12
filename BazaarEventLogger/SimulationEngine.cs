@@ -202,6 +202,13 @@ namespace BazaarEventLogger
                         var damageAmount = RollDamageAmount(sourceCard, effect.Value, rng, out var isCrit);
                         ApplyDamage(combatant, damageAmount);
                         TriggerHealthLossEffectsIfNeeded(combatant, ReferenceEquals(combatant, owner) ? target : owner, rng, events, combatant.Name);
+                        if (isCrit &&
+                            sourceCard != null &&
+                            !string.Equals(effect.Trigger, SimEffectTriggers.OnCardCritted, StringComparison.OrdinalIgnoreCase))
+                        {
+                            TriggerCardCritEffects(owner, target, sourceCard, rng, events, ownerLabel);
+                        }
+
                         events?.Add($"{effectLabel}:{combatant.Name}:hp={combatant.Health}:shield={combatant.Shield}{(isCrit ? ":crit" : "")}");
                     }
                     break;
@@ -453,9 +460,13 @@ namespace BazaarEventLogger
                 return;
             }
 
+            var previousRage = combatant.Rage;
             var maxRage = combatant.RageMax == 0 ? int.MaxValue : combatant.RageMax;
             combatant.Rage = Math.Max(0, Math.Min(maxRage, combatant.Rage + delta));
             events?.Add($"{effectLabel}:{combatant.Name}:rage={combatant.Rage}/{combatant.RageMax}");
+
+            if (delta > 0 && combatant.Rage > previousRage)
+                TriggerEffects(combatant, opponent, rng, SimEffectTriggers.OnPlayerRageGain, events, ownerLabel);
 
             if (!combatant.IsEnraged && combatant.RageMax > 0 && combatant.Rage >= combatant.RageMax)
                 EnterEnrage(combatant, opponent, rng, events, ownerLabel);
@@ -552,6 +563,23 @@ namespace BazaarEventLogger
             }
         }
 
+        private static void TriggerCardCritEffects(
+            SimCombatantSnapshot owner,
+            SimCombatantSnapshot target,
+            SimCardSnapshot critCard,
+            Random rng,
+            List<string> events,
+            string ownerLabel)
+        {
+            foreach (var effect in critCard.Effects.Where(e => !e.IsPassive && e.Trigger == SimEffectTriggers.OnCardCritted).ToList())
+            {
+                if (!ShouldActivateEffect(effect, owner, critCard))
+                    continue;
+
+                ApplyEffect(effect, owner, target, rng, critCard, events, ownerLabel);
+            }
+        }
+
         private static void TriggerHealthLossEffectsIfNeeded(
             SimCombatantSnapshot damaged,
             SimCombatantSnapshot opponent,
@@ -645,19 +673,7 @@ namespace BazaarEventLogger
             if (existing != null)
             {
                 existing.Value = Math.Max(0, existing.Value + delta);
-                return;
             }
-
-            if (delta <= 0)
-                return;
-
-            card.Effects.Add(new SimEffectSpec
-            {
-                Type = effectType,
-                Value = delta,
-                Target = effectType == "heal" || effectType == "shield_apply" ? "self" : "opponent",
-                Source = "runtime_buff"
-            });
         }
 
         private static void AdvanceCardTimers(SimCardSnapshot card)
@@ -879,8 +895,10 @@ namespace BazaarEventLogger
                     Name = card.Name,
                     InstanceId = card.InstanceId,
                     TemplateId = card.TemplateId,
+                    CardType = card.CardType,
                     Tier = card.Tier,
                     Size = card.Size,
+                    Tags = card.Tags.ToList(),
                     CooldownMax = card.CooldownMax,
                     CurrentCooldown = card.CooldownMax,
                     Multicast = card.Multicast,
@@ -1045,11 +1063,19 @@ namespace BazaarEventLogger
                 case "self_card":
                 case "all_self_cards":
                 case "adjacent_self_cards":
+                case "all_self_weapon_cards":
+                case "all_self_nonweapon_cards":
+                case "leftmost_self_weapon_card":
+                case "rightmost_self_weapon_card":
                     pool = owner.Cards;
                     break;
                 case "opponent_card":
                 case "all_opponent_cards":
                 case "adjacent_opponent_cards":
+                case "all_opponent_weapon_cards":
+                case "all_opponent_nonweapon_cards":
+                case "leftmost_opponent_weapon_card":
+                case "rightmost_opponent_weapon_card":
                     pool = opponent.Cards;
                     break;
                 default:
@@ -1059,16 +1085,33 @@ namespace BazaarEventLogger
                     break;
             }
 
-            if (targetMode == "self_card" && sourceCard != null && pool.Contains(sourceCard))
+            var filteredPool = ApplyTargetCardFilter(pool, targetMode);
+
+            if (targetMode == "self_card" && sourceCard != null && filteredPool.Contains(sourceCard))
                 return new List<SimCardSnapshot> { sourceCard };
 
             if (targetMode == "adjacent_self_cards" || targetMode == "adjacent_opponent_cards")
-                return ResolveAdjacentCards(pool, sourceCard);
+                return ResolveAdjacentCards(filteredPool, sourceCard);
 
-            if ((targetMode == "all_self_cards" || targetMode == "all_opponent_cards") && sourceCard != null && pool.Contains(sourceCard))
-                return pool.Where(card => card != sourceCard).ToList();
+            if (targetMode == "leftmost_self_weapon_card" || targetMode == "leftmost_opponent_weapon_card")
+                return filteredPool.Take(1).ToList();
 
-            return pool.ToList();
+            if (targetMode == "rightmost_self_weapon_card" || targetMode == "rightmost_opponent_weapon_card")
+                return filteredPool.TakeLast(1).ToList();
+
+            if ((targetMode == "all_self_cards" ||
+                 targetMode == "all_opponent_cards" ||
+                 targetMode == "all_self_weapon_cards" ||
+                 targetMode == "all_opponent_weapon_cards" ||
+                 targetMode == "all_self_nonweapon_cards" ||
+                 targetMode == "all_opponent_nonweapon_cards") &&
+                sourceCard != null &&
+                filteredPool.Contains(sourceCard))
+            {
+                return filteredPool.Where(card => card != sourceCard).ToList();
+            }
+
+            return filteredPool.ToList();
         }
 
         private static List<SimCardSnapshot> ResolveAdjacentCards(IList<SimCardSnapshot> cards, SimCardSnapshot sourceCard)
@@ -1091,8 +1134,35 @@ namespace BazaarEventLogger
         {
             return scope == "all_self_cards" ||
                    scope == "all_opponent_cards" ||
+                   scope == "all_self_weapon_cards" ||
+                   scope == "all_opponent_weapon_cards" ||
+                   scope == "all_self_nonweapon_cards" ||
+                   scope == "all_opponent_nonweapon_cards" ||
                    scope == "adjacent_self_cards" ||
                    scope == "adjacent_opponent_cards";
+        }
+
+        private static List<SimCardSnapshot> ApplyTargetCardFilter(IEnumerable<SimCardSnapshot> cards, string targetMode)
+        {
+            var result = cards?.ToList() ?? new List<SimCardSnapshot>();
+            if (targetMode == null)
+                return result;
+
+            if (targetMode.Contains("_weapon_", StringComparison.OrdinalIgnoreCase))
+                return result.Where(IsWeaponCard).ToList();
+
+            if (targetMode.Contains("_nonweapon_", StringComparison.OrdinalIgnoreCase))
+                return result.Where(card => !IsWeaponCard(card)).ToList();
+
+            return result;
+        }
+
+        private static bool IsWeaponCard(SimCardSnapshot card)
+        {
+            if (card?.Tags == null || card.Tags.Count == 0)
+                return false;
+
+            return card.Tags.Any(tag => string.Equals(tag, "Weapon", StringComparison.OrdinalIgnoreCase));
         }
 
         private static void ApplyCombatantAttributeModification(SimCombatantSnapshot target, string attrName, int value)

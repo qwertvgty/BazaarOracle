@@ -6,7 +6,9 @@ namespace BazaarEventLogger
     public static class SimEffectTriggers
     {
         public const string OnCardFired = "on_card_fired";
+        public const string OnCardCritted = "on_card_critted";
         public const string OnItemUsed = "on_item_used";
+        public const string OnPlayerRageGain = "on_player_rage_gain";
         public const string OnPlayerHealthLoss = "on_player_health_loss";
         public const string OnPlayerEnraged = "on_player_enraged";
         public const string OnPlayerEnrageEnded = "on_player_enrage_ended";
@@ -45,8 +47,10 @@ namespace BazaarEventLogger
         public string Name;
         public string InstanceId;
         public string TemplateId;
+        public string CardType;
         public string Tier;
         public string Size;
+        public List<string> Tags = new List<string>();
         public int CooldownMax;
         public int CurrentCooldown;
         public int Multicast;

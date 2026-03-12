@@ -376,6 +376,9 @@ namespace BazaarEventLogger
             var triggerType = trigger?["$type"]?.ToString();
             switch (triggerType)
             {
+                case "TTriggerOnCardCritted":
+                    metadata.Trigger = SimEffectTriggers.OnCardCritted;
+                    break;
                 case "TTriggerOnPlayerEnraged":
                     metadata.Trigger = SimEffectTriggers.OnPlayerEnraged;
                     break;
@@ -391,6 +394,13 @@ namespace BazaarEventLogger
                         .ToList();
                     break;
                 case "TTriggerOnPlayerAttributeChanged":
+                    if (string.Equals(trigger?["AttributeType"]?.ToString(), "Rage", StringComparison.OrdinalIgnoreCase) &&
+                        string.Equals(trigger?["ChangeType"]?.ToString(), "Gain", StringComparison.OrdinalIgnoreCase))
+                    {
+                        metadata.Trigger = SimEffectTriggers.OnPlayerRageGain;
+                        break;
+                    }
+
                     if (string.Equals(trigger?["AttributeType"]?.ToString(), "Health", StringComparison.OrdinalIgnoreCase) &&
                         string.Equals(trigger?["ChangeType"]?.ToString(), "Loss", StringComparison.OrdinalIgnoreCase))
                     {
@@ -560,7 +570,22 @@ namespace BazaarEventLogger
             if (!string.Equals(modifier?["ModifyMode"]?.ToString(), "Multiply", StringComparison.OrdinalIgnoreCase))
                 return null;
 
-            return ResolveValue(modifier["Value"] as JObject, null);
+            return ResolveRatioValue(modifier["Value"] as JObject);
+        }
+
+        private static double? ResolveRatioValue(JObject valueObj)
+        {
+            if (valueObj == null)
+                return null;
+
+            var type = valueObj["$type"]?.ToString() ?? "";
+            switch (type)
+            {
+                case "TFixedValue":
+                    return valueObj["Value"]?.Value<double?>() ?? valueObj["Value"]?.Value<int?>() ?? 0;
+                default:
+                    return null;
+            }
         }
 
         private static string GetTargetMode(JObject target, string fallback = "opponent")
@@ -571,12 +596,27 @@ namespace BazaarEventLogger
             var type = target["$type"]?.ToString() ?? "";
             var targetMode = target["TargetMode"]?.ToString() ?? "";
             var section = target["TargetSection"]?.ToString() ?? "";
+            var targetSuffix = GetTargetSuffix(target);
 
             if (type.Contains("CardAdjacent"))
             {
                 if (type.Contains("Opponent") || section.Contains("Opponent"))
                     return "adjacent_opponent_cards";
                 return "adjacent_self_cards";
+            }
+            if (type.Contains("CardXMost"))
+            {
+                var side = section.Contains("Opponent") ? "opponent" : "self";
+                var direction = string.Equals(targetMode, "RightMostCard", StringComparison.OrdinalIgnoreCase)
+                    ? "rightmost"
+                    : "leftmost";
+                return $"{direction}_{side}{targetSuffix}_card";
+            }
+            if (type.Contains("CardSection"))
+            {
+                if (section.Contains("Opponent"))
+                    return $"all_opponent{targetSuffix}_cards";
+                return $"all_self{targetSuffix}_cards";
             }
             if (type.Contains("CardAll") || section.Contains("All"))
             {
@@ -596,6 +636,55 @@ namespace BazaarEventLogger
                 return "self_card";
 
             return fallback;
+        }
+
+        private static string GetTargetSuffix(JObject target)
+        {
+            var conditions = target?["Conditions"];
+            if (conditions == null)
+                return string.Empty;
+
+            var requiresWeapon = false;
+            var requiresNonWeapon = false;
+            ParseTargetConditions(conditions, ref requiresWeapon, ref requiresNonWeapon);
+            if (requiresWeapon)
+                return "_weapon";
+            if (requiresNonWeapon)
+                return "_nonweapon";
+
+            return string.Empty;
+        }
+
+        private static void ParseTargetConditions(JToken conditionToken, ref bool requiresWeapon, ref bool requiresNonWeapon)
+        {
+            if (!(conditionToken is JObject condition))
+                return;
+
+            var type = condition["$type"]?.ToString() ?? "";
+            if (string.Equals(type, "TCardConditionalAnd", StringComparison.OrdinalIgnoreCase))
+            {
+                foreach (var child in condition["Conditions"] as JArray ?? new JArray())
+                    ParseTargetConditions(child, ref requiresWeapon, ref requiresNonWeapon);
+                return;
+            }
+
+            if (!string.Equals(type, "TCardConditionalTag", StringComparison.OrdinalIgnoreCase))
+                return;
+
+            var tags = new List<string>();
+            if (condition["Tags"] is JArray tagArray)
+                tags.AddRange(tagArray.Values<string>());
+            else if (condition["Tags"] != null)
+                tags.Add(condition["Tags"]?.ToString());
+
+            if (!tags.Any(tag => string.Equals(tag, "Weapon", StringComparison.OrdinalIgnoreCase)))
+                return;
+
+            var op = condition["Operator"]?.ToString() ?? "";
+            if (string.Equals(op, "None", StringComparison.OrdinalIgnoreCase))
+                requiresNonWeapon = true;
+            else
+                requiresWeapon = true;
         }
 
         private static int ResolveActionValue(JObject action, IDictionary<string, int> attrs, string attrFallback, int defaultValue = 0)

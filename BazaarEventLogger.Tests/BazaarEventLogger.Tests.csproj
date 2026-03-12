@@ -7,8 +7,17 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <Compile Include="..\BazaarEventLogger\CardDatabase.cs" Link="CardDatabase.cs" />
+    <Compile Include="..\BazaarEventLogger\EffectNormalizer.cs" Link="EffectNormalizer.cs" />
     <Compile Include="..\BazaarEventLogger\SimulationModels.cs" Link="SimulationModels.cs" />
     <Compile Include="..\BazaarEventLogger\SimulationEngine.cs" Link="SimulationEngine.cs" />
     <Compile Include="..\BazaarEventLogger\SimulationReporter.cs" Link="SimulationReporter.cs" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Reference Include="Newtonsoft.Json">
+      <HintPath>E:\SteamLibrary\steamapps\common\The Bazaar\TheBazaar_Data\Managed\Newtonsoft.Json.dll</HintPath>
+      <Private>true</Private>
+    </Reference>
   </ItemGroup>
 </Project>

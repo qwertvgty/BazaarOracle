@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Linq;
 using System.Text.Json;
 using BazaarEventLogger;
 
@@ -63,6 +64,10 @@ namespace BazaarEventLogger.Tests
             if (selected?.EncounterSnapshot?.Opponent == null)
                 throw new InvalidOperationException("Failed to deserialize selected encounter snapshot.");
 
+            CardDatabase.Load(ResolveCardsJsonPath(exportDir));
+            RefreshSnapshotFromTemplates(player);
+            RefreshSnapshotFromTemplates(selected.EncounterSnapshot.Opponent);
+
             var options = new SimulationBatchOptions
             {
                 Runs = Math.Max(1, runs),
@@ -115,6 +120,60 @@ namespace BazaarEventLogger.Tests
                 var exportName = SanitizePathPart(new DirectoryInfo(exportDir).Name);
                 return Path.Combine(fallbackRoot, exportName);
             }
+        }
+
+        private static string ResolveCardsJsonPath(string exportDir)
+        {
+            for (var dir = new DirectoryInfo(exportDir); dir != null; dir = dir.Parent)
+            {
+                var candidate = Path.Combine(dir.FullName, "TheBazaar_Data", "StreamingAssets", "cards.json");
+                if (File.Exists(candidate))
+                    return candidate;
+            }
+
+            throw new FileNotFoundException("Unable to locate The Bazaar cards.json from export directory.", exportDir);
+        }
+
+        private static void RefreshSnapshotFromTemplates(SimCombatantSnapshot snapshot)
+        {
+            if (snapshot?.Cards == null)
+                return;
+
+            foreach (var card in snapshot.Cards)
+            {
+                if (string.IsNullOrWhiteSpace(card.TemplateId))
+                    continue;
+
+                var info = CardDatabase.GetInfo(card.TemplateId);
+                if (info == null)
+                    continue;
+
+                var tier = string.IsNullOrWhiteSpace(card.Tier) ? info.StartingTier : card.Tier;
+                var runtimeAttrs = card.Attributes == null
+                    ? new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase)
+                    : new Dictionary<string, int>(card.Attributes, StringComparer.OrdinalIgnoreCase);
+                var profile = EffectNormalizer.NormalizeCard(info, tier, runtimeAttrs);
+                if (profile == null)
+                    continue;
+
+                card.Name = info.InternalName ?? card.Name;
+                card.CardType = info.Type ?? card.CardType;
+                card.Size = string.IsNullOrWhiteSpace(profile.Size) ? card.Size : profile.Size;
+                card.Tier = tier;
+                card.Tags = info.Tags?.ToList() ?? new List<string>();
+                card.CooldownMax = profile.CooldownMax > 0 ? profile.CooldownMax : card.CooldownMax;
+                card.CurrentCooldown = Math.Max(0, card.CooldownMax);
+                card.Multicast = Math.Max(1, profile.Multicast);
+                card.Attributes = profile.Attributes ?? runtimeAttrs;
+                card.Effects = profile.Effects ?? new List<SimEffectSpec>();
+                card.UnsupportedEffects = profile.UnsupportedEffects ?? new List<string>();
+                card.CoverageScore = profile.CoverageScore;
+            }
+
+            snapshot.UnsupportedEffects = snapshot.Cards
+                .SelectMany(card => card.UnsupportedEffects ?? new List<string>())
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToList();
         }
 
         private static string SanitizePathPart(string value)
@@ -293,6 +352,7 @@ namespace BazaarEventLogger.Tests
                 Name = name,
                 CooldownMax = cooldown,
                 CurrentCooldown = cooldown,
+                Tags = new List<string>(),
                 Multicast = 1,
                 CoverageScore = 1.0,
                 Effects = new List<SimEffectSpec>

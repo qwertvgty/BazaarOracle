@@ -52,6 +52,7 @@ namespace BazaarEventLogger
                             Type = card["Type"]?.ToString() ?? card["$type"]?.ToString() ?? "?",
                             StartingTier = card["StartingTier"]?.ToString() ?? "?",
                             Size = card["Size"]?.ToString() ?? "?",
+                            Tags = card["Tags"]?.ToObject<List<string>>() ?? new List<string>(),
                             Heroes = card["Heroes"]?.ToObject<List<string>>() ?? new List<string>(),
                             RawTemplate = card as JObject
                         };
@@ -174,6 +175,7 @@ namespace BazaarEventLogger
         public string Type;
         public string StartingTier;
         public string Size;
+        public List<string> Tags = new List<string>();
         public List<string> Heroes = new List<string>();
         public Dictionary<string, Dictionary<string, string>> TierAttributes = new Dictionary<string, Dictionary<string, string>>();
         public Dictionary<string, string> AbilityDescriptions = new Dictionary<string, string>();
