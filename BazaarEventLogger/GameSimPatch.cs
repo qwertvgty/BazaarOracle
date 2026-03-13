@@ -112,6 +112,7 @@ namespace BazaarEventLogger
                         // Register instance->template mappings from events
                         TrackInstances(sim);
                         EventLogger.LogGameSim(sim, msgId);
+                        GameSimLoggerJsonl.LogGameSim(sim, msgId);
 
                         // Check if this is a combat selection screen (Choice state with combat encounters)
                         TryPredictCombats(sim);
@@ -168,6 +169,7 @@ namespace BazaarEventLogger
                 {
                     TrackInstances(value);
                     EventLogger.LogGameSim(value, __instance?.MessageId ?? "setter");
+                    GameSimLoggerJsonl.LogGameSim(value, __instance?.MessageId ?? "setter");
                 }
             }
             catch (Exception ex)
@@ -224,6 +226,8 @@ namespace BazaarEventLogger
 
         private static void AccumulatePlayerState(GameSim sim)
         {
+            var playerHandInstancesFromEvents = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
             // Track player attributes — merge incrementally because GameSim sends
             // delta-based messages that only include changed attributes.  Replacing
             // _playerState wholesale would lose previously-seen keys like Health.
@@ -249,6 +253,36 @@ namespace BazaarEventLogger
             if (!string.IsNullOrEmpty(sim.CurrentState?.CurrentEncounterId))
                 UpdateCurrentEncounter(sim.CurrentState.CurrentEncounterId);
 
+            // Some GameSim deltas omit card Placement.Owner/Section for cards that
+            // are clearly purchased into Hand. Use events as hints to decide
+            // whether to track such cards for simulation snapshots.
+            if (sim.Events != null)
+            {
+                foreach (var evt in sim.Events)
+                {
+                    switch (evt)
+                    {
+                        case GameSimEventCardPurchased e:
+                            if (!string.IsNullOrWhiteSpace(e.InstanceId) &&
+                                e.CombatantId == BazaarGameShared.Domain.Core.Types.ECombatantId.Player &&
+                                e.Section == BazaarGameShared.Domain.Core.Types.EInventorySection.Hand)
+                            {
+                                playerHandInstancesFromEvents.Add(e.InstanceId);
+                            }
+                            break;
+
+                        case GameSimEventCardMoved e:
+                            if (!string.IsNullOrWhiteSpace(e.InstanceId) &&
+                                e.Owner == BazaarGameShared.Domain.Core.Types.ECombatantId.Player &&
+                                e.ToInventory == BazaarGameShared.Domain.Core.Types.EInventorySection.Hand)
+                            {
+                                playerHandInstancesFromEvents.Add(e.InstanceId);
+                            }
+                            break;
+                    }
+                }
+            }
+
             // Accumulate cards — merge incrementally because GameSim sends
             // delta-based messages.  A later delta for the same card may only
             // contain changed attributes and omit Placement, so we must keep
@@ -259,10 +293,15 @@ namespace BazaarEventLogger
                 {
                     var card = kvp.Value;
                     if (card == null) continue;
+
+                    var instanceId = string.IsNullOrWhiteSpace(card.InstanceId) ? kvp.Key : card.InstanceId;
                     var info = CardDatabase.GetInfo(card.InstanceId);
                     var type = info?.Type ?? "";
                     var isTriggeredSupport = string.Equals(type, "Skill", StringComparison.OrdinalIgnoreCase) ||
                                              string.Equals(type, "PlayerEffect", StringComparison.OrdinalIgnoreCase);
+
+                    var isPlayerHandByEvent = !string.IsNullOrWhiteSpace(instanceId) &&
+                                              playerHandInstancesFromEvents.Contains(instanceId);
 
                     if (card.Placement?.Owner == BazaarGameShared.Domain.Core.Types.ECombatantId.Player &&
                         (card.Placement?.Section == BazaarGameShared.Domain.Core.Types.EInventorySection.Hand || isTriggeredSupport))
@@ -277,6 +316,25 @@ namespace BazaarEventLogger
                                     existing.Attributes[attr.Key] = attr.Value;
                             }
                             // Update mutable fields if present in this delta
+                            if (card.Placement != null) existing.Placement = card.Placement;
+                            if (card.Tier != null) existing.Tier = card.Tier;
+                            if (card.State != default) existing.State = card.State;
+                        }
+                        else
+                        {
+                            _playerCards[kvp.Key] = card;
+                        }
+                    }
+                    else if (isPlayerHandByEvent)
+                    {
+                        ObservePlayerCardRuntime(card);
+                        if (_playerCards.TryGetValue(kvp.Key, out var existing))
+                        {
+                            if (card.Attributes != null)
+                            {
+                                foreach (var attr in card.Attributes)
+                                    existing.Attributes[attr.Key] = attr.Value;
+                            }
                             if (card.Placement != null) existing.Placement = card.Placement;
                             if (card.Tier != null) existing.Tier = card.Tier;
                             if (card.State != default) existing.State = card.State;
