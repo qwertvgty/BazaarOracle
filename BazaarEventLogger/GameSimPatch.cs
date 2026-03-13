@@ -146,7 +146,7 @@ namespace BazaarEventLogger
                     if (sim != null)
                     {
                         CombatLogger.LogCombatSim(sim, msgId);
-                        CombatLoggerJsonl.LogCombatSim(sim, msgId);
+                        CombatLoggerJsonl.LogCombatSim(sim, msgId, _currentEncounterId, _currentEncounterName);
                         return;
                     }
                 }
@@ -182,7 +182,7 @@ namespace BazaarEventLogger
                 if (value != null)
                 {
                     CombatLogger.LogCombatSim(value, __instance?.MessageId ?? "setter");
-                    CombatLoggerJsonl.LogCombatSim(value, __instance?.MessageId ?? "setter");
+                    CombatLoggerJsonl.LogCombatSim(value, __instance?.MessageId ?? "setter", _currentEncounterId, _currentEncounterName);
                 }
             }
             catch (Exception ex)
@@ -201,6 +201,10 @@ namespace BazaarEventLogger
         private static SimUpdateRunState _currentRunState;
         private static string _currentEncounterId;
         private static string _currentEncounterName;
+
+        /// <summary>Current encounter context for tagging combat logs.</summary>
+        public static string CurrentEncounterId => _currentEncounterId;
+        public static string CurrentEncounterName => _currentEncounterName;
         private static string _lastPredictionSignature;
 
         private static void UpdateCurrentEncounter(string encounterId)

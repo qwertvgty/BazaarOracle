@@ -35,13 +35,14 @@ namespace BazaarEventLogger
             _combatCount = 0;
         }
 
-        public static void LogCombatSim(CombatSim sim, string messageId)
+        public static void LogCombatSim(CombatSim sim, string messageId,
+            string encounterId = null, string encounterName = null)
         {
             _combatCount++;
 
             try
             {
-                var root = BuildCombatJson(sim, messageId, _combatCount);
+                var root = BuildCombatJson(sim, messageId, _combatCount, encounterId, encounterName);
                 var line = root.ToString(Formatting.None);
 
                 lock (RecentCombats)
@@ -59,13 +60,16 @@ namespace BazaarEventLogger
             }
         }
 
-        private static JObject BuildCombatJson(CombatSim sim, string messageId, int combatNumber)
+        private static JObject BuildCombatJson(CombatSim sim, string messageId, int combatNumber,
+            string encounterId = null, string encounterName = null)
         {
             var root = new JObject
             {
                 ["combat_id"] = combatNumber,
                 ["timestamp"] = DateTime.Now.ToString("yyyy-MM-dd'T'HH:mm:ss.fff"),
                 ["message_id"] = messageId,
+                ["encounter_id"] = encounterId,
+                ["encounter_name"] = encounterName,
                 ["winner"] = sim.Winner.ToString(),
                 ["loser"] = sim.Loser.ToString(),
                 ["frame_count"] = sim.Frames?.Count ?? 0
