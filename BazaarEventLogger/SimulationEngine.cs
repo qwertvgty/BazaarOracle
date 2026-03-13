@@ -160,7 +160,17 @@ namespace BazaarEventLogger
                 if (card.CurrentCooldown > 0)
                     continue;
 
+                if (card.AmmoMax > 0 && card.CurrentAmmo <= 0)
+                    continue;
+
                 events?.Add($"{ownerLabel}:trigger:{card.Name}");
+
+                if (card.AmmoMax > 0)
+                {
+                    card.CurrentAmmo = Math.Max(0, card.CurrentAmmo - 1);
+                    events?.Add($"{ownerLabel}:ammo:{card.Name}={card.CurrentAmmo}/{card.AmmoMax}");
+                }
+
                 var castCount = Math.Max(1, Math.Min(card.Multicast, MaxCastsPerTrigger));
                 if (card.Multicast > MaxCastsPerTrigger)
                     Plugin.Log?.LogWarning($"Clamped multicast for {ownerLabel}:{card.Name} from {card.Multicast} to {MaxCastsPerTrigger}");
@@ -355,6 +365,11 @@ namespace BazaarEventLogger
                     events?.Add(effectLabel);
                     break;
 
+                case "ammo_reload":
+                    ReloadAmmo(ResolveCardTargets(owner, target, targetAnchor, effect.Target), resolvedValue, rng, effect.Target);
+                    events?.Add(effectLabel);
+                    break;
+
                 case "slow":
                     ApplyStatusDuration(ResolveCardTargets(owner, target, targetAnchor, effect.Target), resolvedValue, effect.TargetCount, isHaste: false, rng: rng, scope: effect.Target);
                     events?.Add(effectLabel);
@@ -464,8 +479,18 @@ namespace BazaarEventLogger
                     case "ChargeAmount":
                         AdjustEffectValue(card, "cooldown_charge", resolvedValue);
                         break;
+                    case "ReloadAmount":
+                        AdjustEffectValue(card, "ammo_reload", resolvedValue);
+                        break;
+                    case "ReloadTargets":
+                        AdjustEffectTargetCount(card, "ammo_reload", resolvedValue);
+                        break;
                     case "Multicast":
                         card.Multicast = Math.Max(1, card.Multicast + resolvedValue);
+                        break;
+                    case "AmmoMax":
+                        card.AmmoMax = Math.Max(0, card.AmmoMax + resolvedValue);
+                        card.CurrentAmmo = Math.Min(card.CurrentAmmo + Math.Max(0, resolvedValue), card.AmmoMax);
                         break;
                     case "Flying":
                         var flying = card.Attributes.TryGetValue("Flying", out var currentFlying) ? currentFlying : 0;
@@ -847,6 +872,23 @@ namespace BazaarEventLogger
             selected.CurrentCooldown = Math.Max(0, selected.CurrentCooldown + delta);
         }
 
+        private static void ReloadAmmo(IList<SimCardSnapshot> cards, int amount, Random rng, string scope)
+        {
+            var candidates = cards.Where(c => c.AmmoMax > 0 && c.CurrentAmmo < c.AmmoMax).ToList();
+            if (candidates.Count == 0)
+                return;
+
+            if (IsMultiTargetScope(scope))
+            {
+                foreach (var card in candidates)
+                    card.CurrentAmmo = Math.Min(card.AmmoMax, card.CurrentAmmo + amount);
+                return;
+            }
+
+            var selected = candidates[rng.Next(candidates.Count)];
+            selected.CurrentAmmo = Math.Min(selected.AmmoMax, selected.CurrentAmmo + amount);
+        }
+
         private static void FreezeRandomCard(IList<SimCardSnapshot> cards, int duration, int targetCount, Random rng, string scope)
         {
             var candidates = cards.Where(c => c.CooldownMax > 0).ToList();
@@ -900,7 +942,10 @@ namespace BazaarEventLogger
 
         private static void ProcessDot(SimCombatantSnapshot target, SimCombatantSnapshot opponent, Random rng, List<string> events, string label)
         {
-            target.BurnTickProgress += TickMs;
+            if (target.Burn > 0)
+                target.BurnTickProgress += TickMs;
+            else
+                target.BurnTickProgress = 0;
             while (target.Burn > 0 && target.BurnTickProgress >= BurnTickMs)
             {
                 ApplyDamage(target, target.Burn);
@@ -912,7 +957,10 @@ namespace BazaarEventLogger
                 events?.Add($"{label}:burn_decay:{target.Burn}");
             }
 
-            target.PoisonTickProgress += TickMs;
+            if (target.Poison > 0)
+                target.PoisonTickProgress += TickMs;
+            else
+                target.PoisonTickProgress = 0;
             while (target.Poison > 0 && target.PoisonTickProgress >= PoisonTickMs)
             {
                 ApplyDamage(target, target.Poison);
@@ -1035,6 +1083,8 @@ namespace BazaarEventLogger
                     CooldownMax = card.CooldownMax,
                     CurrentCooldown = card.CooldownMax,
                     Multicast = card.Multicast,
+                    AmmoMax = card.AmmoMax,
+                    CurrentAmmo = card.AmmoMax,
                     Freeze = 0,
                     HasteDuration = 0,
                     SlowDuration = 0,
@@ -1457,7 +1507,8 @@ namespace BazaarEventLogger
 
         private static string FormatCardState(string prefix, SimCardSnapshot card)
         {
-            return $"{prefix}:{card.Name}:CD={card.CurrentCooldown}/{card.CooldownMax},Freeze={card.Freeze},Haste={card.HasteDuration},Slow={card.SlowDuration},Disabled={(card.IsDisabled ? 1 : 0)},x{card.Multicast}";
+            var ammoStr = card.AmmoMax > 0 ? $",Ammo={card.CurrentAmmo}/{card.AmmoMax}" : "";
+            return $"{prefix}:{card.Name}:CD={card.CurrentCooldown}/{card.CooldownMax}{ammoStr},Freeze={card.Freeze},Haste={card.HasteDuration},Slow={card.SlowDuration},Disabled={(card.IsDisabled ? 1 : 0)},x{card.Multicast}";
         }
     }
 }

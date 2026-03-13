@@ -177,6 +177,8 @@ namespace BazaarEventLogger.Tests
                 card.CooldownMax = profile.CooldownMax > 0 ? profile.CooldownMax : card.CooldownMax;
                 card.CurrentCooldown = Math.Max(0, card.CooldownMax);
                 card.Multicast = Math.Max(1, profile.Multicast);
+                card.AmmoMax = profile.AmmoMax;
+                card.CurrentAmmo = profile.AmmoMax;
                 card.Attributes = profile.Attributes ?? runtimeAttrs;
                 card.Effects = profile.Effects ?? new List<SimEffectSpec>();
                 card.UnsupportedEffects = profile.UnsupportedEffects ?? new List<string>();
@@ -826,6 +828,14 @@ namespace BazaarEventLogger.Tests
                     }
                 }
             };
+        }
+
+        private static SimCardSnapshot NewWeaponCard(string name, int cooldown, string effectType, int value)
+        {
+            var card = NewCard(name, cooldown, effectType, value);
+            card.Tags = new List<string> { "Weapon" };
+            card.CardType = "Item";
+            return card;
         }
 
         private static void TestJsonlWriterProducesValidOutput()

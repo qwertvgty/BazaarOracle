@@ -64,6 +64,8 @@ namespace BazaarEventLogger
         public int CooldownMax;
         public int CurrentCooldown;
         public int Multicast;
+        public int AmmoMax;
+        public int CurrentAmmo;
         public int Freeze;
         public int HasteDuration;
         public int SlowDuration;
@@ -167,6 +169,7 @@ namespace BazaarEventLogger
         public string Size;
         public int CooldownMax;
         public int Multicast;
+        public int AmmoMax;
         public Dictionary<string, int> Attributes = new Dictionary<string, int>();
         public List<SimEffectSpec> Effects = new List<SimEffectSpec>();
         public List<string> UnsupportedEffects = new List<string>();

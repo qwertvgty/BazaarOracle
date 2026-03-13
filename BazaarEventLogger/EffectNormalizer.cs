@@ -32,6 +32,7 @@ namespace BazaarEventLogger
                 Size = info.Size,
                 CooldownMax = GetValue(attrs, "CooldownMax"),
                 Multicast = Math.Max(1, GetValue(attrs, "Multicast", 1)),
+                AmmoMax = GetValue(attrs, "AmmoMax"),
                 Attributes = attrs
             };
 
@@ -224,8 +225,15 @@ namespace BazaarEventLogger
                     return ApplyMetadata(effects, metadata);
 
                 case "TActionCardCharge":
-                case "TActionCardReload":
                     AddEffect(effects, "cooldown_charge", Math.Abs(ResolveActionValue(action, attrs, "ChargeAmount", 1000)), GetTargetMode(action["Target"] as JObject, "self_card"), actionType);
+                    return ApplyMetadata(effects, metadata);
+
+                case "TActionCardReload":
+                    AddEffect(effects, FinalizeEffectTargeting(
+                        NewEffect("ammo_reload", Math.Abs(ResolveActionValue(action, attrs, "ReloadAmount", 1)), GetTargetMode(action["Target"] as JObject, "self_card"), actionType),
+                        action,
+                        attrs,
+                        "ReloadTargets"));
                     return ApplyMetadata(effects, metadata);
 
                 case "TActionPlayerJoyApply":

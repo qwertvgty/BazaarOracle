@@ -156,6 +156,7 @@ namespace BazaarEventLogger
                 Tags = info?.Tags?.ToList() ?? new List<string>(),
                 CooldownMax = profile?.CooldownMax ?? GetRuntimeAttr(runtimeAttrs, "CooldownMax"),
                 Multicast = profile?.Multicast ?? Math.Max(1, GetRuntimeAttr(runtimeAttrs, "Multicast", 1)),
+                AmmoMax = profile?.AmmoMax ?? GetRuntimeAttr(runtimeAttrs, "AmmoMax"),
                 Attributes = profile?.Attributes ?? runtimeAttrs,
                 Effects = profile?.Effects ?? new List<SimEffectSpec>(),
                 UnsupportedEffects = profile?.UnsupportedEffects ?? new List<string>(),
@@ -167,6 +168,7 @@ namespace BazaarEventLogger
                 return null;
 
             snapshot.CurrentCooldown = Math.Max(0, snapshot.CooldownMax);
+            snapshot.CurrentAmmo = snapshot.AmmoMax;
             if (snapshot.Effects.Count == 0)
                 snapshot.UnsupportedEffects.Add("runtime:no_effects");
 
@@ -207,6 +209,7 @@ namespace BazaarEventLogger
                 Tags = info?.Tags?.ToList() ?? new List<string>(),
                 CooldownMax = profile?.CooldownMax ?? cardObj["cooldownMax"]?.Value<int>() ?? 0,
                 Multicast = profile?.Multicast ?? Math.Max(1, cardObj["multicast"]?.Value<int>() ?? 1),
+                AmmoMax = profile?.AmmoMax ?? (exportedAttrs.TryGetValue("AmmoMax", out var ammoMaxVal) ? ammoMaxVal : 0),
                 Attributes = profile?.Attributes ?? exportedAttrs,
                 Effects = profile?.Effects ?? new List<SimEffectSpec>(),
                 UnsupportedEffects = profile?.UnsupportedEffects ?? new List<string>(),
@@ -247,6 +250,7 @@ namespace BazaarEventLogger
                 return null;
 
             snapshot.CurrentCooldown = Math.Max(0, snapshot.CooldownMax);
+            snapshot.CurrentAmmo = snapshot.AmmoMax;
             snapshot.CoverageNotes = SimulationCoverageAnalyzer.AnalyzeCard(snapshot);
             return snapshot;
         }
