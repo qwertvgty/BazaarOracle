@@ -10,6 +10,7 @@ namespace BazaarEventLogger
         private class EffectMetadata
         {
             public string Trigger = SimEffectTriggers.OnCardFired;
+            public string UnsupportedTriggerType;
             public bool RequiresOwnerEnraged;
             public bool RequiresOwnerNotEnraged;
             public List<string> TriggerCardSizes = new List<string>();
@@ -57,6 +58,11 @@ namespace BazaarEventLogger
 
                         total++;
                         var metadata = ParseMetadata(ability.Value as JObject);
+                        if (!string.IsNullOrWhiteSpace(metadata.UnsupportedTriggerType))
+                        {
+                            profile.UnsupportedEffects.Add(DescribeUnsupported("ability_trigger", ability.Name, metadata.UnsupportedTriggerType));
+                            continue;
+                        }
                         var effects = ParseActions(ability.Value?["Action"] as JObject, attrs, metadata);
                         if (effects.Count > 0)
                         {
@@ -84,6 +90,11 @@ namespace BazaarEventLogger
 
                         total++;
                         var metadata = ParseMetadata(aura.Value as JObject);
+                        if (!string.IsNullOrWhiteSpace(metadata.UnsupportedTriggerType))
+                        {
+                            profile.UnsupportedEffects.Add(DescribeUnsupported("aura_trigger", aura.Name, metadata.UnsupportedTriggerType));
+                            continue;
+                        }
                         var effects = ParseAuraActions(aura.Value?["Action"] as JObject, attrs, metadata);
                         if (effects.Count > 0)
                         {
@@ -147,7 +158,7 @@ namespace BazaarEventLogger
             if (action == null)
                 return effects;
 
-            var actionType = action["$type"]?.ToString() ?? "";
+            var actionType = NormalizeTypeName(action["$type"]?.ToString());
             switch (actionType)
             {
                 case "TActionPlayerDamage":
@@ -282,7 +293,7 @@ namespace BazaarEventLogger
             if (action == null)
                 return effects;
 
-            var actionType = action["$type"]?.ToString() ?? "";
+            var actionType = NormalizeTypeName(action["$type"]?.ToString());
             if (actionType == "TAuraActionCardModifyAttribute")
             {
                 AddPassiveEffect(effects, ParseCardModify(action, attrs, actionType));
@@ -519,7 +530,7 @@ namespace BazaarEventLogger
         {
             var metadata = new EffectMetadata();
             var trigger = definition?["Trigger"] as JObject;
-            var triggerType = trigger?["$type"]?.ToString();
+            var triggerType = NormalizeTypeName(trigger?["$type"]?.ToString());
             switch (triggerType)
             {
                 case "TTriggerOnCardCritted":
@@ -560,6 +571,12 @@ namespace BazaarEventLogger
                     }
                     break;
                 default:
+                    if (trigger != null && !string.IsNullOrWhiteSpace(triggerType))
+                    {
+                        metadata.UnsupportedTriggerType = triggerType;
+                        return metadata;
+                    }
+
                     metadata.Trigger = SimEffectTriggers.OnCardFired;
                     break;
             }
@@ -569,9 +586,10 @@ namespace BazaarEventLogger
                 if (!(prereq is JObject prereqObj))
                     continue;
 
-                if (!string.Equals(prereqObj["$type"]?.ToString(), "TPrerequisitePlayer", StringComparison.OrdinalIgnoreCase))
+                var prereqType = NormalizeTypeName(prereqObj["$type"]?.ToString());
+                if (!string.Equals(prereqType, "TPrerequisitePlayer", StringComparison.OrdinalIgnoreCase))
                 {
-                    if (!string.Equals(prereqObj["$type"]?.ToString(), "TPrerequisiteCardCount", StringComparison.OrdinalIgnoreCase))
+                    if (!string.Equals(prereqType, "TPrerequisiteCardCount", StringComparison.OrdinalIgnoreCase))
                         continue;
 
                     var selfSubject = prereqObj["Subject"] as JObject;
@@ -579,7 +597,7 @@ namespace BazaarEventLogger
                     if (selfCondition == null)
                         continue;
 
-                    if (!string.Equals(selfCondition["$type"]?.ToString(), "TCardConditionalAttribute", StringComparison.OrdinalIgnoreCase))
+                    if (!string.Equals(NormalizeTypeName(selfCondition["$type"]?.ToString()), "TCardConditionalAttribute", StringComparison.OrdinalIgnoreCase))
                         continue;
 
                     if (!string.Equals(selfCondition["ComparisonOperator"]?.ToString(), "Equal", StringComparison.OrdinalIgnoreCase))
@@ -597,7 +615,7 @@ namespace BazaarEventLogger
                 if (condition == null)
                     continue;
 
-                if (!string.Equals(condition["$type"]?.ToString(), "TPlayerConditionalAttribute", StringComparison.OrdinalIgnoreCase))
+                if (!string.Equals(NormalizeTypeName(condition["$type"]?.ToString()), "TPlayerConditionalAttribute", StringComparison.OrdinalIgnoreCase))
                     continue;
 
                 var attrName = condition["Attribute"]?.ToString();
@@ -907,7 +925,7 @@ namespace BazaarEventLogger
             if (valueObj == null)
                 return 0;
 
-            var type = valueObj["$type"]?.ToString() ?? "";
+            var type = NormalizeTypeName(valueObj["$type"]?.ToString());
             switch (type)
             {
                 case "TFixedValue":
@@ -930,7 +948,7 @@ namespace BazaarEventLogger
             if (effect == null || valueObj == null)
                 return false;
 
-            var type = valueObj["$type"]?.ToString() ?? "";
+            var type = NormalizeTypeName(valueObj["$type"]?.ToString());
             switch (type)
             {
                 case "TReferenceValueCardAttribute":
@@ -953,7 +971,7 @@ namespace BazaarEventLogger
                         return false;
 
                     var modifierValue = modifier["Value"] as JObject;
-                    var modifierType = modifierValue?["$type"]?.ToString() ?? "";
+                    var modifierType = NormalizeTypeName(modifierValue?["$type"]?.ToString());
                     if (string.Equals(modifierType, "TFixedValue", StringComparison.OrdinalIgnoreCase))
                     {
                         effect.DynamicCountMultiplier = modifierValue["Value"]?.Value<int>() ?? 1;
@@ -1031,6 +1049,25 @@ namespace BazaarEventLogger
             effect.IsPassive = true;
             effect.Trigger = SimEffectTriggers.Passive;
             target.Add(effect);
+        }
+
+        private static string NormalizeTypeName(string raw)
+        {
+            if (string.IsNullOrWhiteSpace(raw))
+                return string.Empty;
+
+            var trimmed = raw.Trim();
+            var commaIdx = trimmed.IndexOf(',');
+            if (commaIdx >= 0)
+                trimmed = trimmed.Substring(0, commaIdx);
+
+            var plusIdx = trimmed.LastIndexOf('+');
+            var dotIdx = trimmed.LastIndexOf('.');
+            var idx = Math.Max(plusIdx, dotIdx);
+            if (idx >= 0 && idx + 1 < trimmed.Length)
+                trimmed = trimmed.Substring(idx + 1);
+
+            return trimmed;
         }
     }
 }

@@ -122,13 +122,30 @@ def extract_real(data: dict) -> CombatSummary:
             opponent_dead = True
 
         # Extract trigger events
+        # Preferred: explicit Triggered events.
+        # Fallback: if logs do not include Triggered, approximate triggers by
+        # the first Executed event per (frame, trigger_source/source).
+        seen_this_frame = set()
         for evt in frame.get("events", []):
-            if evt.get("t") == "Triggered":
-                card = evt.get("source", "?")
+            t = evt.get("t")
+            if t == "Triggered":
+                raw = evt.get("source", "?")
+                card = normalize_card_name(raw)
                 s.card_triggers[card] += 1
                 s.trigger_sequence.append((card, ""))
-
-                # Record HP at this trigger
+                s.hp_at_triggers.append((
+                    card,
+                    player_hp if player_hp is not None else s.initial_player_hp,
+                    opponent_hp if opponent_hp is not None else s.initial_opponent_hp,
+                ))
+            elif t == "Executed":
+                raw = evt.get("trigger_source") or evt.get("source") or "?"
+                card = normalize_card_name(raw)
+                if card in seen_this_frame:
+                    continue
+                seen_this_frame.add(card)
+                s.card_triggers[card] += 1
+                s.trigger_sequence.append((card, ""))
                 s.hp_at_triggers.append((
                     card,
                     player_hp if player_hp is not None else s.initial_player_hp,
@@ -144,8 +161,11 @@ def extract_real(data: dict) -> CombatSummary:
         # Fallback: winner_raw from the data
         winner_raw = data.get("winner", "")
         loser_raw = data.get("loser", "")
-        # Can't reliably map names to Player/Opponent without more context
-        s.winner = f"({winner_raw})"
+        if winner_raw in ("Player", "Opponent"):
+            s.winner = winner_raw
+        else:
+            # Can't reliably map names to Player/Opponent without more context
+            s.winner = f"({winner_raw})"
 
     s.final_player_hp = player_hp if player_hp is not None else s.initial_player_hp
     s.final_opponent_hp = opponent_hp if opponent_hp is not None else s.initial_opponent_hp
@@ -189,7 +209,7 @@ def extract_sim(data: dict) -> CombatSummary:
             t = evt.get("t", "")
 
             if t == "trigger":
-                card = evt.get("card", "?")
+                card = normalize_card_name(evt.get("card", "?"))
                 owner = evt.get("owner", "?")
                 s.card_triggers[card] += 1
                 s.trigger_sequence.append((card, owner))
@@ -506,6 +526,20 @@ def _extract_card_stats_names(combat: dict) -> set:
             name = key
         names.add(name)
     return names
+
+
+def normalize_card_name(raw: str) -> str:
+    """Normalize card identifiers across real/sim logs.
+
+    Real logs often contain instance suffixes like 'Anaconda [itm_wNb_]'.
+    Simulation logs usually contain plain names like 'Anaconda'.
+    """
+    if not raw:
+        return "?"
+    s = str(raw)
+    if " [" in s:
+        return s.rsplit(" [", 1)[0]
+    return s
 
 
 def _match_by_card_fingerprint(real_lines: List[dict], export_dir: Path) -> int:
