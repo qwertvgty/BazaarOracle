@@ -107,6 +107,12 @@ namespace BazaarEventLogger
                 total = profile.Effects.Count;
             }
 
+            foreach (var effect in profile.Effects)
+            {
+                if (!string.IsNullOrEmpty(effect?.OperationWarning))
+                    profile.UnsupportedEffects.Add(effect.OperationWarning);
+            }
+
             profile.UnsupportedEffects = profile.UnsupportedEffects.Distinct(StringComparer.OrdinalIgnoreCase).ToList();
             profile.CoverageScore = total == 0 ? (profile.Effects.Count > 0 ? 0.75 : 0.25) : (double)recognized / total;
             return profile;
@@ -311,59 +317,80 @@ namespace BazaarEventLogger
             var value = ResolveValue(valueObj, attrs);
             if (value == 0)
                 value = ResolveActionValue(action, attrs, attrType, 0);
-            value = ApplyOperationSign(value, action["Operation"]?.ToString());
             var operation = action["Operation"]?.ToString();
 
+            var isUnsupportedOp = !string.IsNullOrEmpty(operation) &&
+                                  !string.Equals(operation, "Add", StringComparison.OrdinalIgnoreCase) &&
+                                  !string.Equals(operation, "Subtract", StringComparison.OrdinalIgnoreCase);
+
+            value = ApplyOperationSign(value, operation);
+
+            SimEffectSpec effect;
             switch (attrType)
             {
                 case "Health":
-                    return FinalizeEffectTargeting(BuildEffectWithDynamicValue(
+                    effect = FinalizeEffectTargeting(BuildEffectWithDynamicValue(
                         value >= 0 ? "heal" : "damage",
                         Math.Abs(value),
                         GetTargetMode(action["Target"] as JObject, value >= 0 ? "self" : "opponent"),
                         actionType,
                         valueObj,
                         operation), action, attrs);
+                    break;
                 case "Shield":
-                    return FinalizeEffectTargeting(BuildEffectWithDynamicValue(
+                    effect = FinalizeEffectTargeting(BuildEffectWithDynamicValue(
                         value >= 0 ? "shield_apply" : "modify_Shield",
                         Math.Abs(value),
                         GetTargetMode(action["Target"] as JObject, "self"),
                         actionType,
                         valueObj,
                         operation), action, attrs);
+                    break;
                 case "HealthRegen":
-                    return FinalizeEffectTargeting(BuildEffectWithDynamicValue("modify_HealthRegen", value, GetTargetMode(action["Target"] as JObject, "self"), actionType, valueObj, operation), action, attrs);
+                    effect = FinalizeEffectTargeting(BuildEffectWithDynamicValue("modify_HealthRegen", value, GetTargetMode(action["Target"] as JObject, "self"), actionType, valueObj, operation), action, attrs);
+                    break;
                 case "HealthMax":
-                    return FinalizeEffectTargeting(BuildEffectWithDynamicValue("modify_HealthMax", value, GetTargetMode(action["Target"] as JObject, "self"), actionType, valueObj, operation), action, attrs);
+                    effect = FinalizeEffectTargeting(BuildEffectWithDynamicValue("modify_HealthMax", value, GetTargetMode(action["Target"] as JObject, "self"), actionType, valueObj, operation), action, attrs);
+                    break;
                 case "Burn":
-                    return FinalizeEffectTargeting(BuildEffectWithDynamicValue(
+                    effect = FinalizeEffectTargeting(BuildEffectWithDynamicValue(
                         value >= 0 ? "burn_apply" : "modify_Burn",
                         Math.Abs(value),
                         GetTargetMode(action["Target"] as JObject, "opponent"),
                         actionType,
                         valueObj,
                         operation), action, attrs);
+                    break;
                 case "Poison":
-                    return FinalizeEffectTargeting(BuildEffectWithDynamicValue(
+                    effect = FinalizeEffectTargeting(BuildEffectWithDynamicValue(
                         value >= 0 ? "poison_apply" : "modify_Poison",
                         Math.Abs(value),
                         GetTargetMode(action["Target"] as JObject, "opponent"),
                         actionType,
                         valueObj,
                         operation), action, attrs);
+                    break;
                 case "Joy":
-                    return FinalizeEffectTargeting(BuildEffectWithDynamicValue("joy", value, GetTargetMode(action["Target"] as JObject, "self"), actionType, valueObj, operation), action, attrs);
+                    effect = FinalizeEffectTargeting(BuildEffectWithDynamicValue("joy", value, GetTargetMode(action["Target"] as JObject, "self"), actionType, valueObj, operation), action, attrs);
+                    break;
                 case "Rage":
-                    return FinalizeEffectTargeting(BuildEffectWithDynamicValue("rage", value, GetTargetMode(action["Target"] as JObject, "self"), actionType, valueObj, operation), action, attrs);
+                    effect = FinalizeEffectTargeting(BuildEffectWithDynamicValue("rage", value, GetTargetMode(action["Target"] as JObject, "self"), actionType, valueObj, operation), action, attrs);
+                    break;
                 case "RageMax":
                 case "EnragedDuration":
                 case "EnragedDurationMax":
                 case "Experience":
-                    return FinalizeEffectTargeting(BuildEffectWithDynamicValue($"modify_{attrType}", value, GetTargetMode(action["Target"] as JObject, "self"), actionType, valueObj, operation), action, attrs);
+                    effect = FinalizeEffectTargeting(BuildEffectWithDynamicValue($"modify_{attrType}", value, GetTargetMode(action["Target"] as JObject, "self"), actionType, valueObj, operation), action, attrs);
+                    break;
                 default:
-                    return FinalizeEffectTargeting(BuildEffectWithDynamicValue($"modify_{attrType}", value, GetTargetMode(action["Target"] as JObject, "self"), actionType, valueObj, operation), action, attrs);
+                    effect = FinalizeEffectTargeting(BuildEffectWithDynamicValue($"modify_{attrType}", value, GetTargetMode(action["Target"] as JObject, "self"), actionType, valueObj, operation), action, attrs);
+                    break;
             }
+
+            if (isUnsupportedOp && effect != null)
+                effect.OperationWarning = $"op:{operation}({attrType})_treated_as_Add";
+
+            return effect;
         }
 
         private static SimEffectSpec ParseCardModify(JObject action, IDictionary<string, int> attrs, string actionType)
@@ -385,13 +412,19 @@ namespace BazaarEventLogger
                     actionType);
             }
 
+            var isUnsupportedOp = !string.IsNullOrEmpty(operation) &&
+                                  !string.Equals(operation, "Add", StringComparison.OrdinalIgnoreCase) &&
+                                  !string.Equals(operation, "Subtract", StringComparison.OrdinalIgnoreCase);
+
             value = ApplyOperationSign(value, operation);
 
+            SimEffectSpec effect;
             switch (attrType)
             {
                 case "Cooldown":
                 case "CooldownMax":
-                    return FinalizeEffectTargeting(BuildEffectWithDynamicValue("cooldown_charge", Math.Abs(value), GetTargetMode(action["Target"] as JObject, "self_card"), actionType, valueObj, operation), action, attrs);
+                    effect = FinalizeEffectTargeting(BuildEffectWithDynamicValue("cooldown_charge", Math.Abs(value), GetTargetMode(action["Target"] as JObject, "self_card"), actionType, valueObj, operation), action, attrs);
+                    break;
                 case "DamageAmount":
                 case "ShieldApplyAmount":
                 case "HealAmount":
@@ -403,10 +436,17 @@ namespace BazaarEventLogger
                 case "FreezeAmount":
                 case "ChargeAmount":
                 case "Multicast":
-                    return FinalizeEffectTargeting(BuildEffectWithDynamicValue($"buff_{attrType}", value, GetTargetMode(action["Target"] as JObject, "self_card"), actionType, valueObj, operation), action, attrs);
+                    effect = FinalizeEffectTargeting(BuildEffectWithDynamicValue($"buff_{attrType}", value, GetTargetMode(action["Target"] as JObject, "self_card"), actionType, valueObj, operation), action, attrs);
+                    break;
                 default:
-                    return FinalizeEffectTargeting(BuildEffectWithDynamicValue($"buff_{attrType}", value, GetTargetMode(action["Target"] as JObject, "self_card"), actionType, valueObj, operation), action, attrs);
+                    effect = FinalizeEffectTargeting(BuildEffectWithDynamicValue($"buff_{attrType}", value, GetTargetMode(action["Target"] as JObject, "self_card"), actionType, valueObj, operation), action, attrs);
+                    break;
             }
+
+            if (isUnsupportedOp && effect != null)
+                effect.OperationWarning = $"op:{operation}({attrType})_treated_as_Add";
+
+            return effect;
         }
 
         private static SimEffectSpec NewEffect(string type, int value, string target, string source)

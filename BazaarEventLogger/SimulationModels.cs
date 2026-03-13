@@ -48,6 +48,7 @@ namespace BazaarEventLogger
         public int DynamicValueSign = 1;
         public int TargetCount = 1;
         public bool UseTriggerSourceForTargeting;
+        public string OperationWarning;
 
         public override string ToString() => $"{Type}:{Value}->{Target}";
     }

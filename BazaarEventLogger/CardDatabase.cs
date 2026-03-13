@@ -147,6 +147,21 @@ namespace BazaarEventLogger
         }
 
         /// <summary>
+        /// Search templates by name (case-insensitive substring match).
+        /// Returns all matching CardInfo entries.
+        /// </summary>
+        public static List<CardInfo> SearchByName(string query)
+        {
+            if (string.IsNullOrWhiteSpace(query))
+                return new List<CardInfo>();
+
+            return _templates.Values
+                .Where(info => info.InternalName != null &&
+                               info.InternalName.IndexOf(query, StringComparison.OrdinalIgnoreCase) >= 0)
+                .ToList();
+        }
+
+        /// <summary>
         /// Format: "CardName (instanceId)" or just "CardName" if template
         /// </summary>
         public static string FormatId(string id)

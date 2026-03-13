@@ -113,6 +113,64 @@ python BazaarEventLogger/tools/combat_diff.py "<导出目录>" --real-index 2
 
 ---
 
+## 卡牌检查工具（inspect）
+
+`inspect` 子命令用于快速查看卡牌的原始模板数据和归一化结果，无需手动翻阅 `cards.json`。
+
+```powershell
+dotnet run --project BazaarEventLogger.Tests -- inspect <cardsJsonDirOrPath> "<卡牌名>" [Tier]
+```
+
+示例：
+
+```powershell
+# 按名称模糊搜索，默认使用 StartingTier
+dotnet run --project BazaarEventLogger.Tests -- inspect `
+  "E:\SteamLibrary\steamapps\common\The Bazaar" "Silver Stake"
+
+# 指定 Tier
+dotnet run --project BazaarEventLogger.Tests -- inspect `
+  "E:\SteamLibrary\steamapps\common\The Bazaar" "Silver Stake" Bronze
+```
+
+| 参数 | 含义 | 默认值 |
+|------|------|--------|
+| `inspect` | 固定子命令 | — |
+| `cardsJsonDirOrPath` | 游戏根目录或 cards.json 路径 | — |
+| `CardName` | 卡牌名称（模糊匹配，大小写不敏感） | — |
+| `Tier` | 要查看的等级 | 卡牌的 `StartingTier` |
+
+### 输出内容
+
+| 区块 | 说明 |
+|------|------|
+| **Tier Attributes** | 指定等级下合并后的全部属性值（CooldownMax, DamageAmount, Custom_0 等） |
+| **Raw Abilities** | 原始模板中的 Abilities，标注 `[*]` 表示当前 Tier 激活。显示 Action 类型、Operation、Value 来源、Target |
+| **Raw Auras** | 原始模板中的 Auras，同上格式 |
+| **Normalized Effects** | 归一化后的效果列表。带 `WARNING:` 前缀的表示使用了不支持的操作（如 Multiply 被当作 Add 处理） |
+| **Unsupported/Warnings** | 汇总所有未支持的效果和操作警告 |
+| **Coverage Notes** | 覆盖率分析器给出的注意事项 |
+
+### 典型用途
+
+- **排查模拟偏差**：当 diff 报告显示某张卡伤害/效果异常时，用 inspect 对比原始模板和归一化结果，快速定位是归一化丢失了什么（如 Multiply 被当 Add）。
+- **检查新卡支持度**：查看新卡的 Abilities/Auras 是否被完整归一化，Coverage Notes 中是否有未支持的 trigger/effect。
+- **理解卡牌机制**：直接看 Raw Abilities/Auras 中的 Operation、Value 引用关系，比翻 JSON 方便。
+
+### 操作警告（OperationWarning）
+
+归一化器在处理卡牌/玩家属性修改时，如果遇到非 Add/Subtract 的 Operation（如 `Multiply`），会在对应效果上标记警告：
+
+```
+WARNING:op:Multiply(DamageAmount)_treated_as_Add
+```
+
+这意味着该效果的值被错误地当作加法处理。这些警告会同时出现在：
+- inspect 输出的 Normalized Effects 和 Unsupported/Warnings 区块
+- 离线回放的覆盖率报告中
+
+---
+
 ## 第四步：定位和修复问题
 
 根据 diff 报告中的提示，常见问题和对应修复位置：

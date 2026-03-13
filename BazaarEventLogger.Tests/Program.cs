@@ -27,9 +27,16 @@ namespace BazaarEventLogger.Tests
                     return 0;
                 }
 
+                if (args.Length > 0 && string.Equals(args[0], "inspect", StringComparison.OrdinalIgnoreCase))
+                {
+                    RunInspect(args);
+                    return 0;
+                }
+
                 RunSmokeTests();
                 Console.WriteLine("Simulation smoke tests passed.");
                 Console.WriteLine("Offline runner: dotnet run --project BazaarEventLogger.Tests -- offline <DebugExportDir> [runs] [seedBase] [traceSamples]");
+                Console.WriteLine("Card inspector: dotnet run --project BazaarEventLogger.Tests -- inspect <cardsJsonDir> <CardName> [Tier]");
                 return 0;
             }
             catch (Exception ex)
@@ -116,6 +123,201 @@ namespace BazaarEventLogger.Tests
                 Console.WriteLine($"Trace: {tracePath}");
             if (!string.IsNullOrEmpty(jsonlPath))
                 Console.WriteLine($"JSONL: {jsonlPath}");
+        }
+
+        private static void RunInspect(IReadOnlyList<string> args)
+        {
+            if (args.Count < 3)
+                throw new InvalidOperationException("Usage: inspect <cardsJsonDirOrPath> <CardName> [Tier]");
+
+            var cardsPath = args[1];
+            if (Directory.Exists(cardsPath))
+            {
+                var candidate = Path.Combine(cardsPath, "TheBazaar_Data", "StreamingAssets", "cards.json");
+                if (File.Exists(candidate))
+                    cardsPath = candidate;
+                else
+                    throw new FileNotFoundException("cards.json not found under provided directory", cardsPath);
+            }
+
+            if (!File.Exists(cardsPath))
+                throw new FileNotFoundException("cards.json not found", cardsPath);
+
+            CardDatabase.Load(cardsPath);
+            Console.WriteLine($"Loaded {CardDatabase.TemplateCount} templates from cards.json");
+
+            var query = args[2];
+            var tier = args.Count > 3 ? args[3] : null;
+
+            var matches = CardDatabase.SearchByName(query);
+            if (matches.Count == 0)
+            {
+                Console.WriteLine($"No cards found matching \"{query}\"");
+                return;
+            }
+
+            Console.WriteLine($"Found {matches.Count} match(es) for \"{query}\":");
+            Console.WriteLine();
+
+            foreach (var info in matches)
+            {
+                var effectiveTier = tier ?? info.StartingTier ?? "Bronze";
+                Console.WriteLine(new string('=', 72));
+                Console.WriteLine($"  {info.InternalName}  ({info.Type}, Size={info.Size}, StartingTier={info.StartingTier})");
+                Console.WriteLine($"  ID: {info.Id}");
+                Console.WriteLine($"  Tags: [{string.Join(", ", info.Tags)}]  Heroes: [{string.Join(", ", info.Heroes)}]");
+                Console.WriteLine(new string('=', 72));
+
+                // Tier attributes
+                var attrs = info.GetMergedTierAttributes(effectiveTier);
+                Console.WriteLine($"\n--- Tier Attributes ({effectiveTier}) ---");
+                foreach (var kv in attrs.OrderBy(a => a.Key))
+                    Console.WriteLine($"  {kv.Key} = {kv.Value}");
+
+                // Raw abilities
+                var template = info.RawTemplate;
+                if (template != null)
+                {
+                    var tiers = template["Tiers"] as JObject;
+                    var tierData = tiers?[effectiveTier] as JObject;
+
+                    var activeAbilityIds = new HashSet<string>(
+                        tierData?["AbilityIds"]?.Values<string>() ?? Enumerable.Empty<string>(),
+                        StringComparer.OrdinalIgnoreCase);
+                    var activeAuraIds = new HashSet<string>(
+                        tierData?["AuraIds"]?.Values<string>() ?? Enumerable.Empty<string>(),
+                        StringComparer.OrdinalIgnoreCase);
+
+                    var abilities = template["Abilities"] as JObject;
+                    if (abilities != null && abilities.Count > 0)
+                    {
+                        Console.WriteLine($"\n--- Raw Abilities (active: [{string.Join(",", activeAbilityIds)}]) ---");
+                        foreach (var ability in abilities.Properties())
+                        {
+                            var active = activeAbilityIds.Count == 0 || activeAbilityIds.Contains(ability.Name);
+                            var marker = active ? "*" : " ";
+                            var actionType = ability.Value?["Action"]?["$type"]?.ToString() ?? "?";
+                            var desc = ability.Value?["InternalDescription"]?.ToString();
+                            Console.WriteLine($"  [{marker}] Ability {ability.Name}: {actionType}");
+                            if (!string.IsNullOrEmpty(desc))
+                                Console.WriteLine($"      Desc: {desc}");
+                            PrintActionSummary(ability.Value?["Action"] as JObject, "      ");
+                        }
+                    }
+
+                    var auras = template["Auras"] as JObject;
+                    if (auras != null && auras.Count > 0)
+                    {
+                        Console.WriteLine($"\n--- Raw Auras (active: [{string.Join(",", activeAuraIds)}]) ---");
+                        foreach (var aura in auras.Properties())
+                        {
+                            var active = activeAuraIds.Count == 0 || activeAuraIds.Contains(aura.Name);
+                            var marker = active ? "*" : " ";
+                            var actionType = aura.Value?["Action"]?["$type"]?.ToString() ?? "?";
+                            Console.WriteLine($"  [{marker}] Aura {aura.Name}: {actionType}");
+                            PrintActionSummary(aura.Value?["Action"] as JObject, "      ");
+                        }
+                    }
+                }
+
+                // Normalized output
+                Console.WriteLine($"\n--- Normalized Effects ({effectiveTier}) ---");
+                var profile = EffectNormalizer.NormalizeCard(info, effectiveTier);
+                if (profile == null)
+                {
+                    Console.WriteLine("  (normalization failed)");
+                    continue;
+                }
+
+                Console.WriteLine($"  CooldownMax={profile.CooldownMax} Multicast={profile.Multicast} AmmoMax={profile.AmmoMax} Coverage={profile.CoverageScore:P0}");
+                foreach (var effect in profile.Effects)
+                {
+                    var parts = new List<string> { $"{effect.Type}={effect.Value}->{effect.Target}" };
+                    if (effect.IsPassive) parts.Add("passive");
+                    if (effect.Trigger != SimEffectTriggers.OnCardFired) parts.Add($"trigger={effect.Trigger}");
+                    if (!string.IsNullOrEmpty(effect.DynamicValueSourceAttribute)) parts.Add($"dynVal={effect.DynamicValueSourceAttribute}");
+                    if (!string.IsNullOrEmpty(effect.DynamicCountScope)) parts.Add($"dynCount={effect.DynamicCountScope}");
+                    if (!string.IsNullOrEmpty(effect.OperationWarning)) parts.Add($"WARNING:{effect.OperationWarning}");
+                    Console.WriteLine($"  {string.Join("  ", parts)}");
+                }
+
+                if (profile.UnsupportedEffects.Count > 0)
+                {
+                    Console.WriteLine("\n  Unsupported/Warnings:");
+                    foreach (var u in profile.UnsupportedEffects)
+                        Console.WriteLine($"    ! {u}");
+                }
+
+                // Coverage analysis
+                var mockCard = new SimCardSnapshot
+                {
+                    Name = info.InternalName,
+                    Effects = profile.Effects,
+                    UnsupportedEffects = profile.UnsupportedEffects
+                };
+                var coverageNotes = SimulationCoverageAnalyzer.AnalyzeCard(mockCard);
+                if (coverageNotes.Count > 0)
+                {
+                    Console.WriteLine("\n  Coverage Notes:");
+                    foreach (var note in coverageNotes)
+                        Console.WriteLine($"    ~ {note}");
+                }
+
+                Console.WriteLine();
+            }
+        }
+
+        private static void PrintActionSummary(JObject action, string indent)
+        {
+            if (action == null) return;
+
+            var type = action["$type"]?.ToString() ?? "";
+
+            // For composite actions, recurse
+            if (type == "TActionComposite")
+            {
+                var actions = action["Actions"] as JArray;
+                if (actions != null)
+                {
+                    foreach (var sub in actions)
+                        PrintActionSummary(sub as JObject, indent + "  ");
+                }
+                return;
+            }
+
+            // For modify actions, show key details
+            var attrType = action["AttributeType"]?.ToString();
+            var operation = action["Operation"]?.ToString();
+            var valueObj = action["Value"] as JObject;
+            var valueType = valueObj?["$type"]?.ToString();
+            var targetObj = action["Target"] as JObject;
+            var targetType = targetObj?["$type"]?.ToString();
+            var targetMode = targetObj?["TargetMode"]?.ToString();
+
+            var parts = new List<string>();
+            if (!string.IsNullOrEmpty(attrType)) parts.Add($"Attr={attrType}");
+            if (!string.IsNullOrEmpty(operation)) parts.Add($"Op={operation}");
+            if (!string.IsNullOrEmpty(valueType))
+            {
+                var shortValue = valueType.Replace("TReferenceValue", "Ref:");
+                var refAttr = valueObj?["AttributeType"]?.ToString();
+                if (!string.IsNullOrEmpty(refAttr))
+                    shortValue += $"({refAttr})";
+                var defaultVal = valueObj?["DefaultValue"]?.ToString();
+                if (!string.IsNullOrEmpty(defaultVal))
+                    shortValue += $" def={defaultVal}";
+                parts.Add($"Value={shortValue}");
+            }
+            if (!string.IsNullOrEmpty(targetType))
+            {
+                var shortTarget = targetType.Replace("TTarget", "");
+                if (!string.IsNullOrEmpty(targetMode))
+                    shortTarget += $"({targetMode})";
+                parts.Add($"Target={shortTarget}");
+            }
+
+            if (parts.Count > 0)
+                Console.WriteLine($"{indent}{string.Join(", ", parts)}");
         }
 
         private static string ResolveOutputDirectory(string exportDir)
