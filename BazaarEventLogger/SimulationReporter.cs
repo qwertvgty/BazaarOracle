@@ -18,7 +18,8 @@ namespace BazaarEventLogger
             foreach (var card in player.Cards)
             {
                 var effects = string.Join(", ", card.Effects.Where(e => !e.IsPassive).Select(e => $"{e.Type}={e.Value}"));
-                sb.AppendLine($"║   {card.Name} [{card.Tier}] CD={card.CooldownMax} x{card.Multicast} | {effects}");
+                var displayCooldown = GetDisplayCooldown(card);
+                sb.AppendLine($"║   {card.Name} [{card.Tier}] CD={displayCooldown} x{card.Multicast} | {effects}");
             }
             sb.AppendLine("╠══════════════════════════════════════════════════════════════");
 
@@ -99,6 +100,32 @@ namespace BazaarEventLogger
         private static string ToPercent(double value)
         {
             return $"{value * 100:F0}%";
+        }
+
+        private static string GetDisplayCooldown(SimCardSnapshot card)
+        {
+            if (card == null)
+                return "0";
+
+            var effective = GetEffectiveCooldown(card);
+            if (effective == card.CooldownMax)
+                return effective.ToString();
+
+            return $"{effective} ({card.CooldownMax})";
+        }
+
+        private static int GetEffectiveCooldown(SimCardSnapshot card)
+        {
+            if (card == null)
+                return 0;
+
+            var flatReduction = GetAttribute(card, "FlatCooldownReduction");
+            return System.Math.Max(250, card.CooldownMax + flatReduction);
+        }
+
+        private static int GetAttribute(SimCardSnapshot card, string key)
+        {
+            return card?.Attributes != null && card.Attributes.TryGetValue(key, out var value) ? value : 0;
         }
     }
 }

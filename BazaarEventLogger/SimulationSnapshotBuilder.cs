@@ -143,6 +143,19 @@ namespace BazaarEventLogger
             var runtimeAttrs = GetRuntimeCardAttributes(card);
             info = info ?? CardDatabase.GetInfo(card.InstanceId);
             var tier = card.Tier?.ToString() ?? info?.StartingTier ?? "Bronze";
+            if (GameSimPatch.TryGetObservedPlayerCardRuntime(card.InstanceId, out var observed))
+            {
+                if (GetTierRank(observed.Tier) > GetTierRank(tier))
+                {
+                    tier = observed.Tier;
+                    runtimeAttrs = new Dictionary<string, int>(observed.Attributes, StringComparer.OrdinalIgnoreCase);
+                }
+                else if (runtimeAttrs.Count == 0 && observed.Attributes.Count > 0)
+                {
+                    runtimeAttrs = new Dictionary<string, int>(observed.Attributes, StringComparer.OrdinalIgnoreCase);
+                }
+            }
+
             var profile = EffectNormalizer.NormalizeCard(info, tier, runtimeAttrs);
 
             var snapshot = new SimCardSnapshot
@@ -284,6 +297,28 @@ namespace BazaarEventLogger
         private static int GetRuntimeAttr(IDictionary<string, int> attrs, string key, int defaultValue = 0)
         {
             return attrs != null && attrs.TryGetValue(key, out var value) ? value : defaultValue;
+        }
+
+        private static int GetTierRank(string tierName)
+        {
+            if (string.IsNullOrWhiteSpace(tierName))
+                return -1;
+
+            switch (tierName.Trim())
+            {
+                case "Bronze":
+                    return 0;
+                case "Silver":
+                    return 1;
+                case "Gold":
+                    return 2;
+                case "Diamond":
+                    return 3;
+                case "Legendary":
+                    return 4;
+                default:
+                    return -1;
+            }
         }
 
         private static int GetCardSortBucket(SimUpdateCard card)

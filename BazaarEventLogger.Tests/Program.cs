@@ -427,6 +427,7 @@ namespace BazaarEventLogger.Tests
             TestPositionalRightCardTargetsNeighbor();
             TestAllTargetBuffAppliesToEveryCard();
             TestPlayerAttributeModificationCanStripShield();
+            TestPredictionReportDisplaysEffectiveCooldown();
             TestJsonlWriterProducesValidOutput();
             TestMultiplyBuffTriplesDamage();
         }
@@ -1123,6 +1124,21 @@ namespace BazaarEventLogger.Tests
             Assert(hasEventTick, "Should have at least one tick with events.");
 
             Console.WriteLine($"  JSONL test: {jsonl.Length} chars, {ticks.GetArrayLength()} ticks");
+        }
+
+        private static void TestPredictionReportDisplaysEffectiveCooldown()
+        {
+            var player = NewCombatant("Player", 100, NewWeaponCard("Battle Axe", 8000, "damage", 75));
+            player.Cards[0].Tier = "Silver";
+            player.Cards[0].Attributes = new Dictionary<string, int>
+            {
+                ["CooldownMax"] = 8000,
+                ["FlatCooldownReduction"] = -160
+            };
+
+            var report = SimulationReporter.FormatPredictionReport(player, Array.Empty<BatchSimulationResult>());
+            Assert(report.Contains("Battle Axe [Silver] CD=7840 (8000)", StringComparison.Ordinal),
+                $"Expected report to show effective cooldown. Actual report:{Environment.NewLine}{report}");
         }
 
         private static void Assert(bool condition, string message)

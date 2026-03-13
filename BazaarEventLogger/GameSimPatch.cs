@@ -197,6 +197,8 @@ namespace BazaarEventLogger
         // Accumulated player state across messages
         private static Dictionary<string, SimUpdateCard> _playerCards = new Dictionary<string, SimUpdateCard>();
         private static Dictionary<string, SimUpdateCard> _opponentCards = new Dictionary<string, SimUpdateCard>();
+        private static readonly Dictionary<string, ObservedCardRuntime> _observedPlayerCardRuntime =
+            new Dictionary<string, ObservedCardRuntime>(StringComparer.OrdinalIgnoreCase);
         private static SimUpdatePlayer _playerState;
         private static SimUpdateRun _runState;
         private static SimUpdateRunState _currentRunState;
@@ -265,6 +267,7 @@ namespace BazaarEventLogger
                     if (card.Placement?.Owner == BazaarGameShared.Domain.Core.Types.ECombatantId.Player &&
                         (card.Placement?.Section == BazaarGameShared.Domain.Core.Types.EInventorySection.Hand || isTriggeredSupport))
                     {
+                        ObservePlayerCardRuntime(card);
                         if (_playerCards.TryGetValue(kvp.Key, out var existing))
                         {
                             // Merge new attributes into existing card to avoid losing data
@@ -287,6 +290,7 @@ namespace BazaarEventLogger
                     {
                         // Delta with no Placement — card already tracked, merge attributes only
                         var existing = _playerCards[kvp.Key];
+                        ObservePlayerCardRuntime(card);
                         if (card.Attributes != null)
                         {
                             foreach (var attr in card.Attributes)
@@ -324,6 +328,7 @@ namespace BazaarEventLogger
                     {
                         _playerCards.Remove(disposed.InstanceId);
                         _opponentCards.Remove(disposed.InstanceId);
+                        _observedPlayerCardRuntime.Remove(disposed.InstanceId);
                     }
                     // NOTE: CardMoved events are NOT used to remove cards.
                     // During state transitions the game fires CardMoved with
@@ -333,8 +338,61 @@ namespace BazaarEventLogger
                     {
                         _playerCards.Remove(sold.InstanceId);
                         _opponentCards.Remove(sold.InstanceId);
+                        _observedPlayerCardRuntime.Remove(sold.InstanceId);
                     }
                 }
+            }
+        }
+
+        internal static bool TryGetObservedPlayerCardRuntime(string instanceId, out ObservedCardRuntime observed)
+        {
+            return _observedPlayerCardRuntime.TryGetValue(instanceId ?? string.Empty, out observed);
+        }
+
+        private static void ObservePlayerCardRuntime(SimUpdateCard card)
+        {
+            if (card == null || string.IsNullOrWhiteSpace(card.InstanceId))
+                return;
+
+            if (!_observedPlayerCardRuntime.TryGetValue(card.InstanceId, out var observed))
+            {
+                observed = new ObservedCardRuntime();
+                _observedPlayerCardRuntime[card.InstanceId] = observed;
+            }
+
+            var incomingTier = card.Tier?.ToString();
+            if (GetTierRank(incomingTier) > GetTierRank(observed.Tier))
+                observed.Tier = incomingTier;
+
+            if (card.Attributes == null)
+                return;
+
+            foreach (var attr in card.Attributes)
+            {
+                if (attr.Value.DeltaType == EAttributeDeltaType.Update)
+                    observed.Attributes[attr.Key.ToString()] = attr.Value.Value;
+            }
+        }
+
+        private static int GetTierRank(string tierName)
+        {
+            if (string.IsNullOrWhiteSpace(tierName))
+                return -1;
+
+            switch (tierName.Trim())
+            {
+                case "Bronze":
+                    return 0;
+                case "Silver":
+                    return 1;
+                case "Gold":
+                    return 2;
+                case "Diamond":
+                    return 3;
+                case "Legendary":
+                    return 4;
+                default:
+                    return -1;
             }
         }
 
@@ -555,6 +613,12 @@ namespace BazaarEventLogger
                         break;
                 }
             }
+        }
+
+        internal sealed class ObservedCardRuntime
+        {
+            public string Tier;
+            public Dictionary<string, int> Attributes = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
         }
     }
 }
