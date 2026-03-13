@@ -97,12 +97,24 @@ namespace BazaarEventLogger.Tests
             var resultPath = Path.Combine(outputDir, "offline_result.json");
             File.WriteAllText(resultPath, JsonSerializer.Serialize(result, JsonOptions));
 
+            string jsonlPath = null;
+            if (result.TraceSample != null)
+            {
+                jsonlPath = Path.Combine(outputDir, "offline_trace.jsonl");
+                var encName = selected.EncounterName ?? selected.EncounterSnapshot.EncounterName ?? "Encounter";
+                var jsonlLine = SimulationJsonlWriter.WriteTraceJsonl(
+                    result.TraceSample, encName, result.MonsterName, options.SeedBase);
+                File.WriteAllText(jsonlPath, jsonlLine + Environment.NewLine);
+            }
+
             Console.WriteLine($"Offline simulation complete: {selected.EncounterName}");
             Console.WriteLine($"WinRate={result.WinRate:P1} Wins={result.Wins}/{result.Runs} AvgHP={result.AveragePlayerHealthRemaining:F1} Median={result.MedianDurationSeconds:F1}s Verdict={result.Verdict}");
             Console.WriteLine($"Summary: {summaryPath}");
             Console.WriteLine($"Result: {resultPath}");
             if (!string.IsNullOrEmpty(tracePath))
                 Console.WriteLine($"Trace: {tracePath}");
+            if (!string.IsNullOrEmpty(jsonlPath))
+                Console.WriteLine($"JSONL: {jsonlPath}");
         }
 
         private static string ResolveOutputDirectory(string exportDir)
@@ -201,6 +213,7 @@ namespace BazaarEventLogger.Tests
             TestFreezeStopsCooldownOnly();
             TestAllTargetBuffAppliesToEveryCard();
             TestPlayerAttributeModificationCanStripShield();
+            TestJsonlWriterProducesValidOutput();
         }
 
         private static void TestDeterministicDamageRace()
@@ -365,6 +378,53 @@ namespace BazaarEventLogger.Tests
                     }
                 }
             };
+        }
+
+        private static void TestJsonlWriterProducesValidOutput()
+        {
+            var player = NewCombatant("Player", 100, NewCard("Sword", 1000, "damage", 20));
+            var monster = NewCombatant("Monster", 80,
+                NewCard("Burn", 1000, "burn_apply", 10),
+                NewCard("Heal", 2000, "heal", 15));
+            monster.Cards[1].Effects[0].Target = "self";
+
+            var result = SimulationEngine.RunOnce(player, monster, 42);
+            Assert(result.Trace.Count > 0, "Trace should have entries.");
+
+            var jsonl = SimulationJsonlWriter.WriteTraceJsonl(result, "Test Encounter", "TestMonster", 42);
+            Assert(!string.IsNullOrEmpty(jsonl), "JSONL should not be empty.");
+
+            // Verify it's valid JSON
+            var parsed = System.Text.Json.JsonDocument.Parse(jsonl);
+            var root = parsed.RootElement;
+            Assert(root.GetProperty("winner").GetString() == result.Winner, "Winner should match.");
+            Assert(root.GetProperty("duration_ms").GetInt32() == result.DurationMs, "Duration should match.");
+            Assert(root.GetProperty("seed").GetInt32() == 42, "Seed should be recorded.");
+
+            var ticks = root.GetProperty("ticks");
+            Assert(ticks.GetArrayLength() == result.Trace.Count, "Tick count should match trace count.");
+
+            // Verify first tick has structured state
+            var firstTick = ticks[0];
+            Assert(firstTick.GetProperty("player").GetProperty("hp").GetInt32() == 100, "Initial player HP should be 100.");
+            Assert(firstTick.GetProperty("opponent").GetProperty("hp").GetInt32() == 80, "Initial opponent HP should be 80.");
+
+            // Verify events contain structured data (check a tick with events)
+            var hasEventTick = false;
+            for (var i = 0; i < ticks.GetArrayLength(); i++)
+            {
+                var tick = ticks[i];
+                if (tick.TryGetProperty("events", out var events) && events.GetArrayLength() > 0)
+                {
+                    hasEventTick = true;
+                    var firstEvent = events[0];
+                    Assert(firstEvent.TryGetProperty("t", out _), "Event should have type field 't'.");
+                    break;
+                }
+            }
+            Assert(hasEventTick, "Should have at least one tick with events.");
+
+            Console.WriteLine($"  JSONL test: {jsonl.Length} chars, {ticks.GetArrayLength()} ticks");
         }
 
         private static void Assert(bool condition, string message)
