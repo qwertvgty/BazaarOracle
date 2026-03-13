@@ -211,7 +211,23 @@ namespace BazaarEventLogger
                     .Select(effect => new { Card = card, Effect = effect }))
                 .ToList();
 
-            foreach (var entry in passiveEffects.Where(entry => entry.Effect.Type.StartsWith("buff_", StringComparison.OrdinalIgnoreCase)))
+            // Phase 1a: buff_ auras WITHOUT DynamicValueSourceAttribute (set base attributes like CritChance)
+            foreach (var entry in passiveEffects.Where(entry =>
+                entry.Effect.Type.StartsWith("buff_", StringComparison.OrdinalIgnoreCase)
+                && string.IsNullOrWhiteSpace(entry.Effect.DynamicValueSourceAttribute)
+                && string.IsNullOrWhiteSpace(entry.Effect.DynamicCountScope)))
+            {
+                if (!ShouldActivateEffect(entry.Effect, owner, entry.Card))
+                    continue;
+
+                ApplyEffect(entry.Effect, owner, target, rng, entry.Card);
+            }
+
+            // Phase 1b: buff_ auras WITH DynamicValueSourceAttribute/DynamicCountScope (depend on attributes set in 1a)
+            foreach (var entry in passiveEffects.Where(entry =>
+                entry.Effect.Type.StartsWith("buff_", StringComparison.OrdinalIgnoreCase)
+                && (!string.IsNullOrWhiteSpace(entry.Effect.DynamicValueSourceAttribute)
+                    || !string.IsNullOrWhiteSpace(entry.Effect.DynamicCountScope))))
             {
                 if (!ShouldActivateEffect(entry.Effect, owner, entry.Card))
                     continue;
@@ -544,6 +560,46 @@ namespace BazaarEventLogger
                         card.CurrentCooldown = Math.Min(card.CurrentCooldown, GetEffectiveCooldownMax(card));
                         break;
                 }
+
+                // Recalculate passive auras on this card that depend on the changed attribute.
+                // Skip during passive initialization (Phase 1b handles those separately).
+                if (!effect.IsPassive)
+                    RecalcDynamicAuras(card, attrName, resolvedValue);
+            }
+        }
+
+        /// <summary>
+        /// When an attribute changes on a card, find passive auras on that card whose
+        /// DynamicValueSourceAttribute references the changed attribute and propagate
+        /// the delta so the derived buff stays in sync (e.g. CritChance → DamageAmount).
+        /// </summary>
+        private static void RecalcDynamicAuras(SimCardSnapshot card, string changedAttr, int delta)
+        {
+            foreach (var aura in card.Effects)
+            {
+                if (!aura.IsPassive)
+                    continue;
+                if (!string.Equals(aura.DynamicValueSourceAttribute, changedAttr, StringComparison.OrdinalIgnoreCase))
+                    continue;
+                if (!aura.Type.StartsWith("buff_", StringComparison.OrdinalIgnoreCase))
+                    continue;
+
+                // The aura's effective value changed by (sign * delta)
+                var auraDelta = aura.DynamicValueSign * delta;
+                if (auraDelta == 0)
+                    continue;
+
+                var auraAttr = aura.Type.Substring("buff_".Length);
+
+                // Update the card's attribute
+                card.Attributes[auraAttr] = card.Attributes.TryGetValue(auraAttr, out var cur)
+                    ? cur + auraDelta
+                    : auraDelta;
+
+                // Sync the corresponding effect value (e.g. DamageAmount → damage effect)
+                var effectType = GetEffectTypeForAttribute(auraAttr);
+                if (effectType != null)
+                    AdjustEffectValue(card, effectType, auraDelta);
             }
         }
 
