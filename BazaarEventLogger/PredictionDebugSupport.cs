@@ -78,6 +78,22 @@ namespace BazaarEventLogger
                         matchedCombatJsonl);
                 }
 
+                var gameSimTail = EventLogger.GetRecentGameSimsText();
+                if (!string.IsNullOrWhiteSpace(gameSimTail))
+                {
+                    File.WriteAllText(
+                        Path.Combine(exportDir, "GameSimEvents.tail.log"),
+                        gameSimTail);
+                }
+
+                var gameSimJsonlTail = GameSimLoggerJsonl.GetRecentGameSimsJsonl();
+                if (!string.IsNullOrWhiteSpace(gameSimJsonlTail))
+                {
+                    File.WriteAllText(
+                        Path.Combine(exportDir, "GameSimEvents.tail.jsonl"),
+                        gameSimJsonlTail);
+                }
+
                 File.WriteAllText(
                     Path.Combine(exportDir, "coverage_report.txt"),
                     SimulationReporter.FormatCoverageReport(

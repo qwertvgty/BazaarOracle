@@ -7,6 +7,9 @@
 ### 1. 游戏事件日志 (GameSimEvents.log)
 实时记录游戏流程事件：卡牌购买/出售/升级、状态转换、玩家属性变化等。所有卡牌 ID 自动翻译为可读名称。
 
+### 1.1 游戏事件日志（结构化）(GameSimEvents.jsonl)
+与 `GameSimEvents.log` 同步写入的 JSON Lines（每行一条 GameSim 消息），更适合程序/AI 检索、过滤与统计分析。
+
 ### 2. 战斗事件日志 (CombatSimEvents.log)
 逐帧记录战斗过程：每张卡的冷却、触发、伤害/治疗/灼烧等效果执行，玩家和对手的血量变化。
 
@@ -71,6 +74,7 @@ dotnet build -c Release
 |------|------|
 | `BepInEx/LogOutput.log` | BepInEx 加载日志（确认插件是否正常加载） |
 | `BepInEx/GameSimEvents.log` | 游戏流程事件 |
+| `BepInEx/GameSimEvents.jsonl` | 游戏流程事件（JSON Lines，便于程序/AI 分析） |
 | `BepInEx/CombatSimEvents.log` | 战斗帧数据 |
 | `BepInEx/BattleSimulator.log` | 战斗预测结果 |
 
@@ -101,6 +105,7 @@ dotnet build -c Release
 | `CombatSimEvents.log` | 最近 5 场完整真实战斗日志（人类可读） |
 | `CombatSimEvents.jsonl` | 最近 5 场完整真实战斗日志（结构化 JSON Lines，便于程序分析） |
 | `GameSimEvents.tail.log` | GameSim 日志尾部片段 |
+| `GameSimEvents.tail.jsonl` | GameSim 日志尾部片段（JSON Lines，便于程序/AI 分析） |
 
 ### 2. 运行离线回放
 

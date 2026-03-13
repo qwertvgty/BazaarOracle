@@ -26,6 +26,7 @@ namespace BazaarEventLogger
 
             // Initialize loggers
             EventLogger.Initialize();
+            GameSimLoggerJsonl.Initialize();
             CombatLogger.Initialize();
             CombatLoggerJsonl.Initialize();
             BattleSimulator.Initialize();
@@ -39,6 +40,7 @@ namespace BazaarEventLogger
             Logger.LogInfo($"{PluginName} v{PluginVersion} loaded!");
             Logger.LogInfo($"  Card templates: {CardDatabase.TemplateCount}");
             Logger.LogInfo($"  GameSim log: {EventLogger.LogFilePath}");
+            Logger.LogInfo($"  GameSim jsonl: {GameSimLoggerJsonl.LogFilePath}");
             Logger.LogInfo($"  CombatSim log: {CombatLogger.LogFilePath}");
         }
 

@@ -12,6 +12,8 @@ namespace BazaarEventLogger
     {
         public static string LogFilePath { get; private set; }
         private static int _messageCount;
+        private const int RecentCapacity = 50;
+        private static readonly Queue<string> RecentMessages = new Queue<string>();
 
         public static void Initialize()
         {
@@ -19,6 +21,19 @@ namespace BazaarEventLogger
             var header = $"=== Bazaar Event Logger Started @ {DateTime.Now:yyyy-MM-dd HH:mm:ss} ==={Environment.NewLine}";
             File.AppendAllText(LogFilePath, header);
             _messageCount = 0;
+            lock (RecentMessages) RecentMessages.Clear();
+        }
+
+        public static string GetRecentGameSimsText(int maxMessages = 50)
+        {
+            lock (RecentMessages)
+            {
+                if (RecentMessages.Count == 0)
+                    return string.Empty;
+
+                maxMessages = Math.Max(1, maxMessages);
+                return string.Join(Environment.NewLine, RecentMessages.TakeLast(Math.Min(maxMessages, RecentMessages.Count)));
+            }
         }
 
         public static void LogGameSim(GameSim sim, string messageId)
@@ -77,7 +92,15 @@ namespace BazaarEventLogger
 
             try
             {
-                File.AppendAllText(LogFilePath, sb.ToString());
+                var payload = sb.ToString();
+                lock (RecentMessages)
+                {
+                    RecentMessages.Enqueue(payload);
+                    while (RecentMessages.Count > RecentCapacity)
+                        RecentMessages.Dequeue();
+                }
+
+                File.AppendAllText(LogFilePath, payload);
             }
             catch (Exception ex)
             {
