@@ -222,9 +222,21 @@ namespace BazaarEventLogger
 
         private static void AccumulatePlayerState(GameSim sim)
         {
-            // Track player attributes
+            // Track player attributes — merge incrementally because GameSim sends
+            // delta-based messages that only include changed attributes.  Replacing
+            // _playerState wholesale would lose previously-seen keys like Health.
             if (sim.Player?.Attributes != null && sim.Player.Attributes.Count > 0)
-                _playerState = sim.Player;
+            {
+                if (_playerState == null)
+                {
+                    _playerState = sim.Player;
+                }
+                else
+                {
+                    foreach (var kvp in sim.Player.Attributes)
+                        _playerState.Attributes[kvp.Key] = kvp.Value;
+                }
+            }
 
             // Track run state
             if (sim.Run != null)
