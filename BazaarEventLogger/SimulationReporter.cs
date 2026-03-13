@@ -34,10 +34,41 @@ namespace BazaarEventLogger
                     sb.AppendLine($"║   Risks: {string.Join("; ", result.LossReasons)}");
                 if (result.UnsupportedEffects.Count > 0)
                     sb.AppendLine($"║   Unsupported: {string.Join(", ", result.UnsupportedEffects.Take(6))}");
+                if (result.CoverageGaps.Count > 0)
+                    sb.AppendLine($"║   Coverage Gaps: {string.Join(", ", result.CoverageGaps.Take(6))}");
                 sb.AppendLine("║");
             }
 
             sb.AppendLine("╚══════════════════════════════════════════════════════════════");
+            return sb.ToString();
+        }
+
+        public static string FormatCoverageReport(
+            SimCombatantSnapshot player,
+            SimEncounterSnapshot encounter,
+            BatchSimulationResult result)
+        {
+            var sb = new StringBuilder();
+            sb.AppendLine("Coverage Report");
+            sb.AppendLine($"Player gaps: {(player?.CoverageNotes?.Count ?? 0)}");
+            foreach (var note in player?.CoverageNotes?.Take(20) ?? Enumerable.Empty<string>())
+                sb.AppendLine($"- P {note}");
+
+            if (encounter?.Opponent != null)
+            {
+                var opponent = encounter.Opponent;
+                sb.AppendLine($"Opponent gaps: {(opponent.CoverageNotes?.Count ?? 0)}");
+                foreach (var note in opponent.CoverageNotes?.Take(20) ?? Enumerable.Empty<string>())
+                    sb.AppendLine($"- O {note}");
+            }
+
+            if (result?.CoverageGaps?.Count > 0)
+            {
+                sb.AppendLine("Encounter summary:");
+                foreach (var note in result.CoverageGaps.Take(20))
+                    sb.AppendLine($"- {note}");
+            }
+
             return sb.ToString();
         }
 

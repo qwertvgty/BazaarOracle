@@ -12,6 +12,8 @@ namespace BazaarEventLogger
         public const string OnPlayerHealthLoss = "on_player_health_loss";
         public const string OnPlayerEnraged = "on_player_enraged";
         public const string OnPlayerEnrageEnded = "on_player_enrage_ended";
+        public const string OnFightStarted = "on_fight_started";
+        public const string OnFightEnded = "on_fight_ended";
         public const string Passive = "passive";
     }
 
@@ -38,6 +40,14 @@ namespace BazaarEventLogger
         public List<string> TriggerCardSizes = new List<string>();
         public string RequiresSourceAttributeZero;
         public double? RequiresOwnerHealthBelowRatio;
+        public string DynamicValueSourceAttribute;
+        public string DynamicCountScope;
+        public string DynamicCountSourceAttribute;
+        public int DynamicCountMultiplier = 1;
+        public bool DynamicCountExcludeSource;
+        public int DynamicValueSign = 1;
+        public int TargetCount = 1;
+        public bool UseTriggerSourceForTargeting;
 
         public override string ToString() => $"{Type}:{Value}->{Target}";
     }
@@ -57,9 +67,11 @@ namespace BazaarEventLogger
         public int Freeze;
         public int HasteDuration;
         public int SlowDuration;
+        public bool IsDisabled;
         public Dictionary<string, int> Attributes = new Dictionary<string, int>();
         public List<SimEffectSpec> Effects = new List<SimEffectSpec>();
         public List<string> UnsupportedEffects = new List<string>();
+        public List<string> CoverageNotes = new List<string>();
         public double CoverageScore = 1.0;
     }
 
@@ -83,6 +95,7 @@ namespace BazaarEventLogger
         public int PoisonTickProgress;
         public List<SimCardSnapshot> Cards = new List<SimCardSnapshot>();
         public List<string> UnsupportedEffects = new List<string>();
+        public List<string> CoverageNotes = new List<string>();
 
         public double CoverageScore =>
             Cards.Count == 0 ? 1.0 : Cards.Average(c => c.CoverageScore);
@@ -113,6 +126,17 @@ namespace BazaarEventLogger
         public List<SimulationTraceEntry> Trace = new List<SimulationTraceEntry>();
     }
 
+    public class PendingSimEffect
+    {
+        public int DueTimeMs;
+        public SimEffectSpec Effect;
+        public SimCombatantSnapshot Owner;
+        public SimCombatantSnapshot Target;
+        public SimCardSnapshot SourceCard;
+        public SimCardSnapshot TriggerSourceCard;
+        public string OwnerLabel;
+    }
+
     public class BatchSimulationResult
     {
         public string EncounterName;
@@ -129,6 +153,7 @@ namespace BazaarEventLogger
         public string ConfidenceLabel;
         public string Verdict;
         public List<string> UnsupportedEffects = new List<string>();
+        public List<string> CoverageGaps = new List<string>();
         public List<string> KeyThreats = new List<string>();
         public List<string> LossReasons = new List<string>();
         public SingleSimulationResult TraceSample;

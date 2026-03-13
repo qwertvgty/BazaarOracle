@@ -4,6 +4,7 @@ using System.IO;
 using System.Linq;
 using System.Text.Json;
 using BazaarEventLogger;
+using Newtonsoft.Json.Linq;
 
 namespace BazaarEventLogger.Tests
 {
@@ -179,11 +180,16 @@ namespace BazaarEventLogger.Tests
                 card.Attributes = profile.Attributes ?? runtimeAttrs;
                 card.Effects = profile.Effects ?? new List<SimEffectSpec>();
                 card.UnsupportedEffects = profile.UnsupportedEffects ?? new List<string>();
+                card.CoverageNotes = SimulationCoverageAnalyzer.AnalyzeCard(card);
                 card.CoverageScore = profile.CoverageScore;
             }
 
             snapshot.UnsupportedEffects = snapshot.Cards
                 .SelectMany(card => card.UnsupportedEffects ?? new List<string>())
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToList();
+            snapshot.CoverageNotes = snapshot.Cards
+                .SelectMany(card => card.CoverageNotes ?? new List<string>())
                 .Distinct(StringComparer.OrdinalIgnoreCase)
                 .ToList();
         }
@@ -211,6 +217,9 @@ namespace BazaarEventLogger.Tests
             TestBatchVerdict();
             TestHasteAndSlowTiming();
             TestFreezeStopsCooldownOnly();
+            TestDisabledCardDoesNotReTrigger();
+            TestFreezeTargetBuffIncreasesFrozenCards();
+            TestPositionalRightCardTargetsNeighbor();
             TestAllTargetBuffAppliesToEveryCard();
             TestPlayerAttributeModificationCanStripShield();
             TestJsonlWriterProducesValidOutput();
@@ -288,6 +297,153 @@ namespace BazaarEventLogger.Tests
             Assert(frozenResult.DurationMs > hastedResult.DurationMs, "Freeze should prevent cooldown progress while haste duration still decays.");
         }
 
+        private static void TestDisabledCardDoesNotReTrigger()
+        {
+            var fireBomb = new SimCardSnapshot
+            {
+                Name = "Fire Bomb",
+                CooldownMax = 1000,
+                CurrentCooldown = 1000,
+                Tags = new List<string>(),
+                Multicast = 1,
+                CoverageScore = 1.0,
+                Effects = new List<SimEffectSpec>
+                {
+                    new SimEffectSpec
+                    {
+                        Type = "burn_apply",
+                        Value = 5,
+                        Target = "opponent"
+                    },
+                    new SimEffectSpec
+                    {
+                        Type = "disable",
+                        Value = 1,
+                        Target = "self_card"
+                    }
+                }
+            };
+
+            var player = NewCombatant("Player", 100, NewCard("Sword", 5000, "damage", 50));
+            var opponent = NewCombatant("Opponent", 100, fireBomb);
+
+            var result = SimulationEngine.RunOnce(player, opponent, 7);
+            var burnEvents = result.Trace
+                .SelectMany(entry => entry.Events)
+                .Count(evt => evt.Contains("Opponent:Fire Bomb:burn_apply=5->opponent"));
+            Assert(burnEvents == 1, $"Disabled Fire Bomb should only trigger once. Actual triggers: {burnEvents}");
+        }
+
+        private static void TestFreezeTargetBuffIncreasesFrozenCards()
+        {
+            var snowWisp = new SimCardSnapshot
+            {
+                Name = "Snow Wisp",
+                CooldownMax = 6000,
+                CurrentCooldown = 6000,
+                Tags = new List<string>(),
+                Multicast = 1,
+                CoverageScore = 1.0,
+                Effects = new List<SimEffectSpec>
+                {
+                    new SimEffectSpec
+                    {
+                        Type = "freeze",
+                        Value = 1000,
+                        Target = "random_opponent_card",
+                        TargetCount = 1
+                    },
+                    new SimEffectSpec
+                    {
+                        Type = "buff_FreezeTargets",
+                        Value = 1,
+                        Target = "self_card",
+                        Trigger = SimEffectTriggers.OnPlayerEnraged
+                    }
+                }
+            };
+
+            var rageDriver = NewCard("Pebble", 1000, "damage", 1);
+            rageDriver.Size = "Small";
+            var rage = new SimCardSnapshot
+            {
+                Name = "Karnok's Rage",
+                CooldownMax = 0,
+                CurrentCooldown = 0,
+                Size = "Medium",
+                Multicast = 1,
+                CoverageScore = 1.0,
+                Effects = new List<SimEffectSpec>
+                {
+                    new SimEffectSpec
+                    {
+                        Type = "rage",
+                        Value = 100,
+                        Target = "self",
+                        Trigger = SimEffectTriggers.OnItemUsed,
+                        TriggerCardSizes = new List<string> { "Small" }
+                    }
+                }
+            };
+
+            var player = NewCombatant("Player", 100, snowWisp, rageDriver, rage);
+            player.RageMax = 100;
+            player.EnragedDurationMax = 5000;
+
+            var opponent = NewCombatant(
+                "Opponent",
+                100,
+                NewCard("Dummy A", 999999, "damage", 1),
+                NewCard("Dummy B", 999999, "damage", 1),
+                NewCard("Dummy C", 999999, "damage", 1));
+
+            var result = SimulationEngine.RunOnce(player, opponent, 7);
+            var snowEntry = result.Trace.FirstOrDefault(entry =>
+                entry.Events.Any(evt => evt.Contains("Player:trigger:Snow Wisp")));
+            Assert(snowEntry != null, "Expected Snow Wisp to trigger during the test.");
+
+            var frozenCards = snowEntry.CardStates.Count(state =>
+                state.StartsWith("O:", StringComparison.Ordinal) &&
+                (state.Contains("Freeze=1000", StringComparison.Ordinal) ||
+                 state.Contains("Freeze=950", StringComparison.Ordinal)));
+            Assert(frozenCards >= 2, $"Expected FreezeTargets buff to freeze at least 2 opponent cards. Actual frozen cards: {frozenCards}");
+        }
+
+        private static void TestPositionalRightCardTargetsNeighbor()
+        {
+            var squirrel = new SimCardSnapshot
+            {
+                Name = "Flying Squirrel",
+                CooldownMax = 1000,
+                CurrentCooldown = 1000,
+                Tags = new List<string>(),
+                Multicast = 1,
+                CoverageScore = 1.0,
+                Effects = new List<SimEffectSpec>
+                {
+                    new SimEffectSpec
+                    {
+                        Type = "haste",
+                        Value = 1000,
+                        Target = "right_self_card"
+                    }
+                }
+            };
+
+            var spear = NewCard("Spear", 4000, "damage", 20);
+            var player = NewCombatant("Player", 100, squirrel, spear);
+            var opponent = NewCombatant("Opponent", 100, NewCard("Dummy", 999999, "damage", 1));
+
+            var result = SimulationEngine.RunOnce(player, opponent, 3);
+            var firstTrigger = result.Trace.FirstOrDefault(entry =>
+                entry.Events.Any(evt => evt.Contains("Player:trigger:Flying Squirrel")));
+            Assert(firstTrigger != null, "Expected Flying Squirrel to trigger.");
+
+            var spearState = firstTrigger.CardStates.FirstOrDefault(state => state.StartsWith("P:Spear:", StringComparison.Ordinal));
+            Assert(spearState != null && (spearState.Contains("Haste=1000", StringComparison.Ordinal) || spearState.Contains("Haste=950", StringComparison.Ordinal)),
+                $"Expected right neighbor Spear to receive haste. Actual state: {spearState}");
+        }
+
         private static void TestAllTargetBuffAppliesToEveryCard()
         {
             var banner = new SimCardSnapshot
@@ -344,6 +500,298 @@ namespace BazaarEventLogger.Tests
 
             var result = SimulationEngine.RunOnce(player, opponent, 1);
             Assert(result.DurationMs < baseline.DurationMs, "Generic player attribute modify should be able to strip opponent shield.");
+        }
+
+        private static void TestNormalizerSupportsCardCountScaledPassiveAuras()
+        {
+            var rawTemplate = JObject.Parse(@"
+{
+  'Tiers': {
+    'Silver': {
+      'Attributes': {
+        'Custom_0': 10,
+        'Custom_1': 10
+      },
+      'AuraIds': ['0', '1']
+    }
+  },
+  'Abilities': {},
+  'Auras': {
+    '0': {
+      'Action': {
+        '$type': 'TAuraActionPlayerModifyAttribute',
+        'AttributeType': 'HealthRegen',
+        'Operation': 'Add',
+        'Value': {
+          '$type': 'TReferenceValueCardAttribute',
+          'Target': {
+            '$type': 'TTargetCardSelf',
+            'Conditions': null
+          },
+          'AttributeType': 'RegenApplyAmount',
+          'DefaultValue': 0
+        },
+        'Target': {
+          '$type': 'TTargetPlayerRelative',
+          'TargetMode': 'Self',
+          'Conditions': null
+        }
+      }
+    },
+    '1': {
+      'Action': {
+        '$type': 'TAuraActionCardModifyAttribute',
+        'AttributeType': 'RegenApplyAmount',
+        'Operation': 'Add',
+        'Value': {
+          '$type': 'TReferenceValueCardCount',
+          'Target': {
+            '$type': 'TTargetCardSection',
+            'TargetSection': 'SelfHand',
+            'ExcludeSelf': false,
+            'Conditions': {
+              '$type': 'TCardConditionalTag',
+              'Tags': ['Weapon'],
+              'Operator': 'None'
+            }
+          },
+          'DefaultValue': 0,
+          'Modifier': {
+            'ModifyMode': 'Multiply',
+            'Value': {
+              '$type': 'TReferenceValueCardAttribute',
+              'Target': {
+                '$type': 'TTargetCardSelf',
+                'Conditions': null
+              },
+              'AttributeType': 'Custom_0',
+              'DefaultValue': 0
+            },
+            'ShouldRound': true
+          }
+        },
+        'Target': {
+          '$type': 'TTargetCardSelf',
+          'Conditions': null
+        }
+      }
+    }
+  }
+}");
+
+            var info = new CardInfo
+            {
+                Id = "waters",
+                InternalName = "Waters of Infinity",
+                Type = "Skill",
+                StartingTier = "Silver",
+                Size = "Medium",
+                RawTemplate = rawTemplate
+            };
+            info.TierAttributes["Silver"] = new Dictionary<string, string>
+            {
+                ["Custom_0"] = "10",
+                ["Custom_1"] = "10"
+            };
+
+            var profile = EffectNormalizer.NormalizeCard(info, "Silver");
+            var regenAura = profile.Effects.FirstOrDefault(effect => effect.Type == "modify_HealthRegen");
+            var scalingAura = profile.Effects.FirstOrDefault(effect => effect.Type == "buff_RegenApplyAmount");
+
+            Assert(regenAura != null, "Expected Waters of Infinity to produce a passive HealthRegen modifier.");
+            Assert(regenAura.DynamicValueSourceAttribute == "RegenApplyAmount", "Expected HealthRegen aura to resolve from RegenApplyAmount at runtime.");
+            Assert(scalingAura != null, "Expected Waters of Infinity to produce a passive RegenApplyAmount buff.");
+            Assert(scalingAura.DynamicCountScope == "all_self_nonweapon_cards", "Expected Regen aura to scale with self non-weapon card count.");
+            Assert(scalingAura.DynamicCountSourceAttribute == "Custom_0", "Expected Regen aura to scale with the source card Custom_0 attribute.");
+            Assert(profile.UnsupportedEffects.Count == 0, "Expected Waters of Infinity auras to be fully normalized.");
+        }
+
+        private static void TestPassiveCardCountScaledRegenAuraAppliesBeforeCombat()
+        {
+            var waters = new SimCardSnapshot
+            {
+                Name = "Waters of Infinity",
+                Tags = new List<string>(),
+                Attributes = new Dictionary<string, int>
+                {
+                    ["Custom_0"] = 10,
+                    ["RegenApplyAmount"] = 0
+                },
+                Effects = new List<SimEffectSpec>
+                {
+                    new SimEffectSpec
+                    {
+                        Type = "buff_RegenApplyAmount",
+                        Target = "self_card",
+                        IsPassive = true,
+                        Trigger = SimEffectTriggers.Passive,
+                        DynamicCountScope = "all_self_nonweapon_cards",
+                        DynamicCountSourceAttribute = "Custom_0"
+                    },
+                    new SimEffectSpec
+                    {
+                        Type = "modify_HealthRegen",
+                        Target = "self",
+                        IsPassive = true,
+                        Trigger = SimEffectTriggers.Passive,
+                        DynamicValueSourceAttribute = "RegenApplyAmount"
+                    }
+                }
+            };
+
+            var player = NewCombatant(
+                "Player",
+                100,
+                waters,
+                new SimCardSnapshot { Name = "Relic A", Tags = new List<string>() },
+                new SimCardSnapshot { Name = "Relic B", Tags = new List<string>() },
+                new SimCardSnapshot { Name = "Relic C", Tags = new List<string>() },
+                new SimCardSnapshot { Name = "Relic D", Tags = new List<string>() },
+                NewWeaponCard("Sword", 1000, "damage", 10));
+
+            var opponent = NewCombatant("Opponent", 5, NewCard("Dummy", 999999, "damage", 1));
+            var result = SimulationEngine.RunOnce(player, opponent, 1);
+
+            Assert(result.Trace.Count > 0, "Expected trace output for passive aura test.");
+            Assert(
+                result.Trace[0].PlayerState.Contains("Regen=50"),
+                $"Expected Waters of Infinity passive aura to grant 50 regen before the first tick. Actual: {result.Trace[0].PlayerState}");
+        }
+
+        private static void TestFightEndedEffectsDoNotApplyDuringCombat()
+        {
+            var baselinePlayer = NewCombatant("Player", 100, NewWeaponCard("Sword", 1000, "damage", 20));
+            var baselineOpponent = NewCombatant("Opponent", 60, NewWeaponCard("Dummy", 999999, "damage", 1));
+            var baseline = SimulationEngine.RunOnce(baselinePlayer, baselineOpponent, 3);
+
+            var player = NewCombatant("Player", 100, NewWeaponCard("Sword", 1000, "damage", 20));
+            player.Cards.Add(new SimCardSnapshot
+            {
+                Name = "Afterparty",
+                Effects = new List<SimEffectSpec>
+                {
+                    new SimEffectSpec
+                    {
+                        Type = "buff_DamageAmount",
+                        Value = 100,
+                        Target = "all_self_weapon_cards",
+                        Trigger = SimEffectTriggers.OnFightEnded
+                    }
+                }
+            });
+
+            var opponent = NewCombatant("Opponent", 60, NewWeaponCard("Dummy", 999999, "damage", 1));
+            var result = SimulationEngine.RunOnce(player, opponent, 3);
+            Assert(result.DurationMs == baseline.DurationMs, "Fight-ended effects should not change the current combat.");
+        }
+
+        private static void TestFightStartedRandomTargetCountCanAffectMultipleCards()
+        {
+            var player = NewCombatant(
+                "Player",
+                100,
+                NewWeaponCard("A", 4000, "damage", 10),
+                NewWeaponCard("B", 4000, "damage", 10),
+                NewWeaponCard("C", 4000, "damage", 10));
+
+            player.Cards.Add(new SimCardSnapshot
+            {
+                Name = "Starter",
+                Effects = new List<SimEffectSpec>
+                {
+                    new SimEffectSpec
+                    {
+                        Type = "haste",
+                        Value = 1000,
+                        Target = "random_self_card",
+                        TargetCount = 2,
+                        Trigger = SimEffectTriggers.OnFightStarted
+                    }
+                }
+            });
+
+            var opponent = NewCombatant("Opponent", 200, NewWeaponCard("Dummy", 999999, "damage", 1));
+            var result = SimulationEngine.RunOnce(player, opponent, 5);
+            var hastedCount = result.Trace[0].CardStates.Count(state => state.StartsWith("P:") && state.Contains("Haste=1000"));
+            Assert(hastedCount == 2, $"Expected 2 cards to be hasted before combat. Actual count: {hastedCount}");
+        }
+
+        private static void TestItemUsedEffectsCanBuffTriggerNeighbors()
+        {
+            var left = NewWeaponCard("Left Blade", 2000, "damage", 10);
+            var center = NewWeaponCard("Great Axe", 1000, "damage", 1);
+            center.Size = "Large";
+            var right = NewWeaponCard("Right Blade", 2000, "damage", 10);
+
+            var baselinePlayer = NewCombatant("Player", 100, left, center, right);
+            var baselineOpponent = NewCombatant("Opponent", 221, NewWeaponCard("Dummy", 999999, "damage", 1));
+            var baseline = SimulationEngine.RunOnce(baselinePlayer, baselineOpponent, 7);
+
+            left = NewWeaponCard("Left Blade", 2000, "damage", 10);
+            center = NewWeaponCard("Great Axe", 1000, "damage", 1);
+            center.Size = "Large";
+            right = NewWeaponCard("Right Blade", 2000, "damage", 10);
+
+            var player = NewCombatant("Player", 100, left, center, right);
+            player.Cards.Add(new SimCardSnapshot
+            {
+                Name = "Flank Test",
+                Effects = new List<SimEffectSpec>
+                {
+                    new SimEffectSpec
+                    {
+                        Type = "buff_DamageAmount",
+                        Value = 100,
+                        Target = "adjacent_self_cards",
+                        Trigger = SimEffectTriggers.OnItemUsed,
+                        TriggerCardSizes = new List<string> { "Large" },
+                        UseTriggerSourceForTargeting = true
+                    }
+                }
+            });
+
+            var opponent = NewCombatant("Opponent", 221, NewWeaponCard("Dummy", 999999, "damage", 1));
+            var result = SimulationEngine.RunOnce(player, opponent, 7);
+            Assert(result.DurationMs < baseline.DurationMs, "Neighbor-targeted item-used effects should buff cards adjacent to the triggering item.");
+        }
+
+        private static void TestItemUsedEffectsResolveNextTick()
+        {
+            var trigger = NewWeaponCard("Trigger", 1000, "damage", 1);
+            trigger.Size = "Large";
+            var followUp = NewWeaponCard("Follow Up", 1050, "damage", 40);
+            var player = NewCombatant("Player", 100, trigger, followUp);
+            player.Cards.Add(new SimCardSnapshot
+            {
+                Name = "Delay Test",
+                Effects = new List<SimEffectSpec>
+                {
+                    new SimEffectSpec
+                    {
+                        Type = "haste",
+                        Value = 1000,
+                        Target = "right_self_card",
+                        Trigger = SimEffectTriggers.OnItemUsed,
+                        TriggerCardSizes = new List<string> { "Large" },
+                        UseTriggerSourceForTargeting = true
+                    }
+                }
+            });
+
+            var opponent = NewCombatant("Opponent", 100, NewWeaponCard("Dummy", 999999, "damage", 1));
+            var result = SimulationEngine.RunOnce(player, opponent, 11);
+
+            var triggerTick = result.Trace.FirstOrDefault(entry =>
+                entry.Summary.Contains("Player:trigger:Trigger", StringComparison.Ordinal));
+            Assert(triggerTick != null, "Expected Trigger to fire.");
+            Assert(
+                !triggerTick.Events.Any(evt => evt.Contains("Delay Test:haste=1000->right_self_card", StringComparison.Ordinal)),
+                "Item-used effect should not resolve in the same tick as the triggering card.");
+
+            var delayedTick = result.Trace.FirstOrDefault(entry =>
+                entry.Summary.Contains("Delay Test:haste=1000->right_self_card", StringComparison.Ordinal));
+            Assert(delayedTick != null, "Expected delayed item-used effect to resolve on a later tick.");
+            Assert(delayedTick.TimeMs == triggerTick.TimeMs + 50, $"Expected delayed item-used effect on next tick. Trigger={triggerTick.TimeMs}, delayed={delayedTick.TimeMs}");
         }
 
         private static SimCombatantSnapshot NewCombatant(string name, int health, params SimCardSnapshot[] cards)

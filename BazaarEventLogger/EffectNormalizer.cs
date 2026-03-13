@@ -184,15 +184,35 @@ namespace BazaarEventLogger
                     return ApplyMetadata(effects, metadata);
 
                 case "TActionCardHaste":
-                    AddEffect(effects, "haste", Math.Abs(ResolveActionValue(action, attrs, "HasteAmount", 1000)), GetTargetMode(action["Target"] as JObject, "self_card"), actionType);
+                    AddEffect(effects, FinalizeEffectTargeting(
+                        NewEffect("haste", Math.Abs(ResolveActionValue(action, attrs, "HasteAmount", 1000)), GetTargetMode(action["Target"] as JObject, "self_card"), actionType),
+                        action,
+                        attrs,
+                        "HasteTargets"));
                     return ApplyMetadata(effects, metadata);
 
                 case "TActionCardSlow":
-                    AddEffect(effects, "slow", Math.Abs(ResolveActionValue(action, attrs, "SlowAmount", 1000)), GetTargetMode(action["Target"] as JObject, "opponent_card"), actionType);
+                    AddEffect(effects, FinalizeEffectTargeting(
+                        NewEffect("slow", Math.Abs(ResolveActionValue(action, attrs, "SlowAmount", 1000)), GetTargetMode(action["Target"] as JObject, "opponent_card"), actionType),
+                        action,
+                        attrs,
+                        "SlowTargets"));
                     return ApplyMetadata(effects, metadata);
 
                 case "TActionCardFreeze":
-                    AddEffect(effects, "freeze", Math.Abs(ResolveActionValue(action, attrs, "FreezeAmount", 1000)), GetTargetMode(action["Target"] as JObject, "opponent_card"), actionType);
+                    AddEffect(effects, FinalizeEffectTargeting(
+                        NewEffect("freeze", Math.Abs(ResolveActionValue(action, attrs, "FreezeAmount", 1000)), GetTargetMode(action["Target"] as JObject, "opponent_card"), actionType),
+                        action,
+                        attrs,
+                        "FreezeTargets"));
+                    return ApplyMetadata(effects, metadata);
+
+                case "TActionCardDisable":
+                    AddEffect(effects, FinalizeEffectTargeting(
+                        NewEffect("disable", 1, GetTargetMode(action["Target"] as JObject, "opponent_card"), actionType),
+                        action,
+                        attrs,
+                        "DisableTargets"));
                     return ApplyMetadata(effects, metadata);
 
                 case "TActionCardFlyingStart":
@@ -279,43 +299,70 @@ namespace BazaarEventLogger
         private static SimEffectSpec ParsePlayerModify(JObject action, IDictionary<string, int> attrs, string actionType)
         {
             var attrType = action["AttributeType"]?.ToString() ?? "";
-            var value = ResolveValue(action["Value"] as JObject, attrs);
+            var valueObj = action["Value"] as JObject ?? action["ReferenceValue"] as JObject;
+            var value = ResolveValue(valueObj, attrs);
             if (value == 0)
                 value = ResolveActionValue(action, attrs, attrType, 0);
             value = ApplyOperationSign(value, action["Operation"]?.ToString());
+            var operation = action["Operation"]?.ToString();
 
             switch (attrType)
             {
                 case "Health":
-                    return NewEffect(value >= 0 ? "heal" : "damage", Math.Abs(value), GetTargetMode(action["Target"] as JObject, value >= 0 ? "self" : "opponent"), actionType);
+                    return FinalizeEffectTargeting(BuildEffectWithDynamicValue(
+                        value >= 0 ? "heal" : "damage",
+                        Math.Abs(value),
+                        GetTargetMode(action["Target"] as JObject, value >= 0 ? "self" : "opponent"),
+                        actionType,
+                        valueObj,
+                        operation), action, attrs);
                 case "Shield":
-                    return NewEffect(value >= 0 ? "shield_apply" : "modify_Shield", Math.Abs(value), GetTargetMode(action["Target"] as JObject, "self"), actionType);
+                    return FinalizeEffectTargeting(BuildEffectWithDynamicValue(
+                        value >= 0 ? "shield_apply" : "modify_Shield",
+                        Math.Abs(value),
+                        GetTargetMode(action["Target"] as JObject, "self"),
+                        actionType,
+                        valueObj,
+                        operation), action, attrs);
                 case "HealthRegen":
-                    return NewEffect("modify_HealthRegen", value, GetTargetMode(action["Target"] as JObject, "self"), actionType);
+                    return FinalizeEffectTargeting(BuildEffectWithDynamicValue("modify_HealthRegen", value, GetTargetMode(action["Target"] as JObject, "self"), actionType, valueObj, operation), action, attrs);
                 case "HealthMax":
-                    return NewEffect("modify_HealthMax", value, GetTargetMode(action["Target"] as JObject, "self"), actionType);
+                    return FinalizeEffectTargeting(BuildEffectWithDynamicValue("modify_HealthMax", value, GetTargetMode(action["Target"] as JObject, "self"), actionType, valueObj, operation), action, attrs);
                 case "Burn":
-                    return NewEffect(value >= 0 ? "burn_apply" : "modify_Burn", Math.Abs(value), GetTargetMode(action["Target"] as JObject, "opponent"), actionType);
+                    return FinalizeEffectTargeting(BuildEffectWithDynamicValue(
+                        value >= 0 ? "burn_apply" : "modify_Burn",
+                        Math.Abs(value),
+                        GetTargetMode(action["Target"] as JObject, "opponent"),
+                        actionType,
+                        valueObj,
+                        operation), action, attrs);
                 case "Poison":
-                    return NewEffect(value >= 0 ? "poison_apply" : "modify_Poison", Math.Abs(value), GetTargetMode(action["Target"] as JObject, "opponent"), actionType);
+                    return FinalizeEffectTargeting(BuildEffectWithDynamicValue(
+                        value >= 0 ? "poison_apply" : "modify_Poison",
+                        Math.Abs(value),
+                        GetTargetMode(action["Target"] as JObject, "opponent"),
+                        actionType,
+                        valueObj,
+                        operation), action, attrs);
                 case "Joy":
-                    return NewEffect("joy", value, GetTargetMode(action["Target"] as JObject, "self"), actionType);
+                    return FinalizeEffectTargeting(BuildEffectWithDynamicValue("joy", value, GetTargetMode(action["Target"] as JObject, "self"), actionType, valueObj, operation), action, attrs);
                 case "Rage":
-                    return NewEffect("rage", value, GetTargetMode(action["Target"] as JObject, "self"), actionType);
+                    return FinalizeEffectTargeting(BuildEffectWithDynamicValue("rage", value, GetTargetMode(action["Target"] as JObject, "self"), actionType, valueObj, operation), action, attrs);
                 case "RageMax":
                 case "EnragedDuration":
                 case "EnragedDurationMax":
                 case "Experience":
-                    return NewEffect($"modify_{attrType}", value, GetTargetMode(action["Target"] as JObject, "self"), actionType);
+                    return FinalizeEffectTargeting(BuildEffectWithDynamicValue($"modify_{attrType}", value, GetTargetMode(action["Target"] as JObject, "self"), actionType, valueObj, operation), action, attrs);
                 default:
-                    return NewEffect($"modify_{attrType}", value, GetTargetMode(action["Target"] as JObject, "self"), actionType);
+                    return FinalizeEffectTargeting(BuildEffectWithDynamicValue($"modify_{attrType}", value, GetTargetMode(action["Target"] as JObject, "self"), actionType, valueObj, operation), action, attrs);
             }
         }
 
         private static SimEffectSpec ParseCardModify(JObject action, IDictionary<string, int> attrs, string actionType)
         {
             var attrType = action["AttributeType"]?.ToString() ?? "";
-            var value = ResolveValue(action["Value"] as JObject, attrs);
+            var valueObj = action["Value"] as JObject ?? action["ReferenceValue"] as JObject;
+            var value = ResolveValue(valueObj, attrs);
             var operation = action["Operation"]?.ToString();
 
             if ((string.Equals(attrType, "Freeze", StringComparison.OrdinalIgnoreCase) ||
@@ -331,17 +378,16 @@ namespace BazaarEventLogger
             }
 
             value = ApplyOperationSign(value, operation);
-            if (value == 0)
-                return null;
 
             switch (attrType)
             {
                 case "Cooldown":
                 case "CooldownMax":
-                    return NewEffect("cooldown_charge", Math.Abs(value), GetTargetMode(action["Target"] as JObject, "self_card"), actionType);
+                    return FinalizeEffectTargeting(BuildEffectWithDynamicValue("cooldown_charge", Math.Abs(value), GetTargetMode(action["Target"] as JObject, "self_card"), actionType, valueObj, operation), action, attrs);
                 case "DamageAmount":
                 case "ShieldApplyAmount":
                 case "HealAmount":
+                case "RegenApplyAmount":
                 case "BurnApplyAmount":
                 case "PoisonApplyAmount":
                 case "HasteAmount":
@@ -349,9 +395,9 @@ namespace BazaarEventLogger
                 case "FreezeAmount":
                 case "ChargeAmount":
                 case "Multicast":
-                    return NewEffect($"buff_{attrType}", value, GetTargetMode(action["Target"] as JObject, "self_card"), actionType);
+                    return FinalizeEffectTargeting(BuildEffectWithDynamicValue($"buff_{attrType}", value, GetTargetMode(action["Target"] as JObject, "self_card"), actionType, valueObj, operation), action, attrs);
                 default:
-                    return NewEffect($"buff_{attrType}", value, GetTargetMode(action["Target"] as JObject, "self_card"), actionType);
+                    return FinalizeEffectTargeting(BuildEffectWithDynamicValue($"buff_{attrType}", value, GetTargetMode(action["Target"] as JObject, "self_card"), actionType, valueObj, operation), action, attrs);
             }
         }
 
@@ -367,6 +413,46 @@ namespace BazaarEventLogger
                 Target = string.IsNullOrEmpty(target) ? "opponent" : target,
                 Source = source
             };
+        }
+
+        private static SimEffectSpec FinalizeEffectTargeting(
+            SimEffectSpec effect,
+            JObject action,
+            IDictionary<string, int> attrs,
+            string fallbackTargetCountAttribute = null)
+        {
+            if (effect == null)
+                return null;
+
+            effect.TargetCount = ResolveTargetCount(action, attrs, fallbackTargetCountAttribute);
+            effect.UseTriggerSourceForTargeting = ShouldUseTriggerSourceForTargeting(action?["Target"] as JObject);
+            return effect;
+        }
+
+        private static SimEffectSpec BuildEffectWithDynamicValue(
+            string type,
+            int value,
+            string target,
+            string source,
+            JObject valueObj,
+            string operation)
+        {
+            var effect = NewEffect(type, value, target, source);
+            if (effect != null)
+                return effect;
+
+            effect = new SimEffectSpec
+            {
+                Type = type,
+                Value = value,
+                Target = string.IsNullOrEmpty(target) ? "opponent" : target,
+                Source = source
+            };
+
+            if (TryPopulateDynamicValue(effect, valueObj, operation))
+                return effect;
+
+            return null;
         }
 
         private static EffectMetadata ParseMetadata(JObject definition)
@@ -392,6 +478,12 @@ namespace BazaarEventLogger
                         .Where(size => !string.IsNullOrWhiteSpace(size))
                         .Distinct(StringComparer.OrdinalIgnoreCase)
                         .ToList();
+                    break;
+                case "TTriggerOnFightStarted":
+                    metadata.Trigger = SimEffectTriggers.OnFightStarted;
+                    break;
+                case "TTriggerOnFightEnded":
+                    metadata.Trigger = SimEffectTriggers.OnFightEnded;
                     break;
                 case "TTriggerOnPlayerAttributeChanged":
                     if (string.Equals(trigger?["AttributeType"]?.ToString(), "Rage", StringComparison.OrdinalIgnoreCase) &&
@@ -528,6 +620,7 @@ namespace BazaarEventLogger
                 exitEffect.IsPassive = false;
                 exitEffect.Trigger = activeWhileEnraged ? SimEffectTriggers.OnPlayerEnrageEnded : SimEffectTriggers.OnPlayerEnraged;
                 exitEffect.Value = -exitEffect.Value;
+                exitEffect.DynamicValueSign *= -1;
                 exitEffect.RequiresOwnerEnraged = false;
                 exitEffect.RequiresOwnerNotEnraged = false;
                 converted.Add(exitEffect);
@@ -550,7 +643,15 @@ namespace BazaarEventLogger
                 RequiresOwnerNotEnraged = effect.RequiresOwnerNotEnraged,
                 TriggerCardSizes = effect.TriggerCardSizes.ToList(),
                 RequiresSourceAttributeZero = effect.RequiresSourceAttributeZero,
-                RequiresOwnerHealthBelowRatio = effect.RequiresOwnerHealthBelowRatio
+                RequiresOwnerHealthBelowRatio = effect.RequiresOwnerHealthBelowRatio,
+                DynamicValueSourceAttribute = effect.DynamicValueSourceAttribute,
+                DynamicCountScope = effect.DynamicCountScope,
+                DynamicCountSourceAttribute = effect.DynamicCountSourceAttribute,
+                DynamicCountMultiplier = effect.DynamicCountMultiplier,
+                DynamicCountExcludeSource = effect.DynamicCountExcludeSource,
+                DynamicValueSign = effect.DynamicValueSign,
+                TargetCount = effect.TargetCount,
+                UseTriggerSourceForTargeting = effect.UseTriggerSourceForTargeting
             };
         }
 
@@ -604,6 +705,22 @@ namespace BazaarEventLogger
                     return "adjacent_opponent_cards";
                 return "adjacent_self_cards";
             }
+            if (type.Contains("CardPositional") && string.Equals(targetMode, "Neighbor", StringComparison.OrdinalIgnoreCase))
+            {
+                if (type.Contains("Opponent") || section.Contains("Opponent"))
+                    return "adjacent_opponent_cards";
+                return "adjacent_self_cards";
+            }
+            if (type.Contains("CardPositional") &&
+                (string.Equals(targetMode, "RightCard", StringComparison.OrdinalIgnoreCase) ||
+                 string.Equals(targetMode, "LeftCard", StringComparison.OrdinalIgnoreCase)))
+            {
+                var side = section.Contains("Opponent", StringComparison.OrdinalIgnoreCase) ? "opponent" : "self";
+                var direction = string.Equals(targetMode, "RightCard", StringComparison.OrdinalIgnoreCase)
+                    ? "right"
+                    : "left";
+                return $"{direction}_{side}{targetSuffix}_card";
+            }
             if (type.Contains("CardXMost"))
             {
                 var side = section.Contains("Opponent") ? "opponent" : "self";
@@ -631,11 +748,36 @@ namespace BazaarEventLogger
             if (type.Contains("Self") || targetMode == "Player")
                 return "self";
             if (type.Contains("Random") && section.Contains("Opponent"))
-                return "opponent_card";
+                return "random_opponent_card";
             if (type.Contains("Random"))
-                return "self_card";
+                return "random_self_card";
 
             return fallback;
+        }
+
+        private static bool ShouldUseTriggerSourceForTargeting(JObject target)
+        {
+            if (target == null)
+                return false;
+
+            return string.Equals(target["Origin"]?.ToString(), "TriggerSource", StringComparison.OrdinalIgnoreCase);
+        }
+
+        private static int ResolveTargetCount(JObject action, IDictionary<string, int> attrs, string fallbackAttribute)
+        {
+            var explicitTargetCount = ResolveValue(action?["TargetCount"] as JObject, attrs);
+            if (explicitTargetCount > 0)
+                return explicitTargetCount;
+
+            if (!string.IsNullOrWhiteSpace(fallbackAttribute) &&
+                attrs != null &&
+                attrs.TryGetValue(fallbackAttribute, out var fallbackCount) &&
+                fallbackCount > 0)
+            {
+                return fallbackCount;
+            }
+
+            return 1;
         }
 
         private static string GetTargetSuffix(JObject target)
@@ -723,12 +865,75 @@ namespace BazaarEventLogger
             }
         }
 
+        private static bool TryPopulateDynamicValue(SimEffectSpec effect, JObject valueObj, string operation)
+        {
+            if (effect == null || valueObj == null)
+                return false;
+
+            var type = valueObj["$type"]?.ToString() ?? "";
+            switch (type)
+            {
+                case "TReferenceValueCardAttribute":
+                case "TReferenceValueCardAttributeUnscaled":
+                    effect.DynamicValueSourceAttribute = valueObj["AttributeType"]?.ToString();
+                    effect.DynamicValueSign = string.Equals(operation, "Subtract", StringComparison.OrdinalIgnoreCase) ? -1 : 1;
+                    return !string.IsNullOrWhiteSpace(effect.DynamicValueSourceAttribute);
+
+                case "TReferenceValueCardCount":
+                    effect.DynamicCountScope = GetCountScope(valueObj["Target"] as JObject);
+                    effect.DynamicCountExcludeSource = valueObj["Target"]?["ExcludeSelf"]?.Value<bool>() ?? false;
+                    effect.DynamicCountMultiplier = 1;
+                    effect.DynamicValueSign = string.Equals(operation, "Subtract", StringComparison.OrdinalIgnoreCase) ? -1 : 1;
+
+                    var modifier = valueObj["Modifier"] as JObject;
+                    if (modifier == null)
+                        return !string.IsNullOrWhiteSpace(effect.DynamicCountScope);
+
+                    if (!string.Equals(modifier["ModifyMode"]?.ToString(), "Multiply", StringComparison.OrdinalIgnoreCase))
+                        return false;
+
+                    var modifierValue = modifier["Value"] as JObject;
+                    var modifierType = modifierValue?["$type"]?.ToString() ?? "";
+                    if (string.Equals(modifierType, "TFixedValue", StringComparison.OrdinalIgnoreCase))
+                    {
+                        effect.DynamicCountMultiplier = modifierValue["Value"]?.Value<int>() ?? 1;
+                        return !string.IsNullOrWhiteSpace(effect.DynamicCountScope);
+                    }
+
+                    if (string.Equals(modifierType, "TReferenceValueCardAttribute", StringComparison.OrdinalIgnoreCase) ||
+                        string.Equals(modifierType, "TReferenceValueCardAttributeUnscaled", StringComparison.OrdinalIgnoreCase))
+                    {
+                        effect.DynamicCountSourceAttribute = modifierValue["AttributeType"]?.ToString();
+                        return !string.IsNullOrWhiteSpace(effect.DynamicCountScope) &&
+                               !string.IsNullOrWhiteSpace(effect.DynamicCountSourceAttribute);
+                    }
+
+                    return false;
+
+                default:
+                    return false;
+            }
+        }
+
         private static int GetValue(IDictionary<string, int> attrs, string key, int defaultValue = 0)
         {
             if (string.IsNullOrEmpty(key) || attrs == null)
                 return defaultValue;
 
             return attrs.TryGetValue(key, out var value) ? value : defaultValue;
+        }
+
+        private static string GetCountScope(JObject target)
+        {
+            if (target == null)
+                return "all_self_cards";
+
+            var section = target["TargetSection"]?.ToString() ?? "";
+            var suffix = GetTargetSuffix(target);
+            if (section.Contains("Opponent", StringComparison.OrdinalIgnoreCase))
+                return $"all_opponent{suffix}_cards";
+
+            return $"all_self{suffix}_cards";
         }
 
         private static void AddIfPositive(ICollection<SimEffectSpec> target, string type, int value, string targetMode, string source)

@@ -11,6 +11,7 @@
     <Compile Include="..\BazaarEventLogger\EffectNormalizer.cs" Link="EffectNormalizer.cs" />
     <Compile Include="..\BazaarEventLogger\SimulationModels.cs" Link="SimulationModels.cs" />
     <Compile Include="..\BazaarEventLogger\SimulationEngine.cs" Link="SimulationEngine.cs" />
+    <Compile Include="..\BazaarEventLogger\SimulationCoverageAnalyzer.cs" Link="SimulationCoverageAnalyzer.cs" />
     <Compile Include="..\BazaarEventLogger\SimulationReporter.cs" Link="SimulationReporter.cs" />
     <Compile Include="..\BazaarEventLogger\SimulationJsonlWriter.cs" Link="SimulationJsonlWriter.cs" />
   </ItemGroup>

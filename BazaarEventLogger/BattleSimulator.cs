@@ -34,7 +34,6 @@ namespace BazaarEventLogger
             Directory.CreateDirectory(TraceCacheDirectory);
             var header = $"=== Battle Simulator Started @ {DateTime.Now:yyyy-MM-dd HH:mm:ss} ==={Environment.NewLine}";
             File.AppendAllText(LogFilePath, header);
-            File.AppendAllText(TraceLogFilePath, header);
             EncounterLearningStore.Initialize(Path.Combine(Paths.BepInExRootPath, "BattleSimulator.learned_mappings.json"));
             LoadMonsterData();
         }
@@ -96,7 +95,6 @@ namespace BazaarEventLogger
                     ? SimulationReporter.FormatSimulationTrace(encounterName, result.MonsterName, result.TraceSample)
                     : string.Empty;
                 var traceFilePath = WriteEncounterTrace(selectionSummary, encounterName, traceText);
-                AppendTraceLog(traceText);
                 if (resolvedByFallback)
                     result.UnsupportedEffects.Insert(0, $"monster_mapping_fallback:{encounterName}->{monsterId}");
                 result.TraceSample = null;
@@ -189,21 +187,6 @@ namespace BazaarEventLogger
             {
                 Plugin.Log?.LogWarning($"Failed to write trace cache for {encounterName}: {ex.Message}");
                 return null;
-            }
-        }
-
-        private static void AppendTraceLog(string traceText)
-        {
-            if (string.IsNullOrWhiteSpace(traceText))
-                return;
-
-            try
-            {
-                File.AppendAllText(TraceLogFilePath, traceText + Environment.NewLine);
-            }
-            catch (Exception ex)
-            {
-                Plugin.Log?.LogWarning($"Failed to append trace log: {ex.Message}");
             }
         }
 

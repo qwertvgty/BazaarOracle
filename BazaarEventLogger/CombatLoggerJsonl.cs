@@ -13,19 +13,27 @@ namespace BazaarEventLogger
 {
     public static class CombatLoggerJsonl
     {
+        private sealed class RecentCombatRecord
+        {
+            public string EncounterId;
+            public string EncounterName;
+            public string Payload;
+        }
+
         public static string LogFilePath { get; private set; }
 
         private const int RecentCombatCapacity = 5;
-        private static readonly Queue<string> RecentCombats = new Queue<string>();
+        private static readonly Queue<RecentCombatRecord> RecentCombats = new Queue<RecentCombatRecord>();
         private static int _combatCount;
 
-        public static string GetRecentCombatsJsonl()
+        public static string GetRecentCombatsJsonl(string encounterId = null)
         {
             lock (RecentCombats)
             {
-                return RecentCombats.Count == 0
+                var records = FilterRecentCombats(encounterId).ToList();
+                return records.Count == 0
                     ? string.Empty
-                    : string.Join(Environment.NewLine, RecentCombats);
+                    : string.Join(Environment.NewLine, records.Select(record => record.Payload));
             }
         }
 
@@ -47,7 +55,12 @@ namespace BazaarEventLogger
 
                 lock (RecentCombats)
                 {
-                    RecentCombats.Enqueue(line);
+                    RecentCombats.Enqueue(new RecentCombatRecord
+                    {
+                        EncounterId = encounterId,
+                        EncounterName = encounterName,
+                        Payload = line
+                    });
                     while (RecentCombats.Count > RecentCombatCapacity)
                         RecentCombats.Dequeue();
                 }
@@ -74,6 +87,12 @@ namespace BazaarEventLogger
                 ["loser"] = sim.Loser.ToString(),
                 ["frame_count"] = sim.Frames?.Count ?? 0
             };
+
+            if (!string.IsNullOrWhiteSpace(encounterId))
+            {
+                root["encounter_id"] = encounterId;
+                root["encounter_name"] = encounterName ?? encounterId;
+            }
 
             // Card stats
             if (sim.CardStats != null && sim.CardStats.Count > 0)
@@ -107,6 +126,13 @@ namespace BazaarEventLogger
             }
 
             return root;
+        }
+
+        private static IEnumerable<RecentCombatRecord> FilterRecentCombats(string encounterId)
+        {
+            return string.IsNullOrWhiteSpace(encounterId)
+                ? RecentCombats
+                : RecentCombats.Where(record => string.Equals(record.EncounterId, encounterId, StringComparison.OrdinalIgnoreCase));
         }
 
         private static JObject BuildFrameJson(int index, CombatSimFrame frame)
