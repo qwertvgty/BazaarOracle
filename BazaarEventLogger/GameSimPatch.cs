@@ -247,7 +247,10 @@ namespace BazaarEventLogger
             if (!string.IsNullOrEmpty(sim.CurrentState?.CurrentEncounterId))
                 UpdateCurrentEncounter(sim.CurrentState.CurrentEncounterId);
 
-            // Accumulate cards - add/update cards, handle disposals
+            // Accumulate cards — merge incrementally because GameSim sends
+            // delta-based messages.  A later delta for the same card may only
+            // contain changed attributes and omit Placement, so we must keep
+            // previously-seen card data and merge new attributes on top.
             if (sim.Cards != null)
             {
                 foreach (var kvp in sim.Cards)
@@ -262,7 +265,35 @@ namespace BazaarEventLogger
                     if (card.Placement?.Owner == BazaarGameShared.Domain.Core.Types.ECombatantId.Player &&
                         (card.Placement?.Section == BazaarGameShared.Domain.Core.Types.EInventorySection.Hand || isTriggeredSupport))
                     {
-                        _playerCards[kvp.Key] = card;
+                        if (_playerCards.TryGetValue(kvp.Key, out var existing))
+                        {
+                            // Merge new attributes into existing card to avoid losing data
+                            if (card.Attributes != null)
+                            {
+                                foreach (var attr in card.Attributes)
+                                    existing.Attributes[attr.Key] = attr.Value;
+                            }
+                            // Update mutable fields if present in this delta
+                            if (card.Placement != null) existing.Placement = card.Placement;
+                            if (card.Tier != null) existing.Tier = card.Tier;
+                            if (card.State != default) existing.State = card.State;
+                        }
+                        else
+                        {
+                            _playerCards[kvp.Key] = card;
+                        }
+                    }
+                    else if (card.Placement == null && _playerCards.ContainsKey(kvp.Key))
+                    {
+                        // Delta with no Placement — card already tracked, merge attributes only
+                        var existing = _playerCards[kvp.Key];
+                        if (card.Attributes != null)
+                        {
+                            foreach (var attr in card.Attributes)
+                                existing.Attributes[attr.Key] = attr.Value;
+                        }
+                        if (card.Tier != null) existing.Tier = card.Tier;
+                        if (card.State != default) existing.State = card.State;
                     }
                     else if (card.Placement?.Owner == BazaarGameShared.Domain.Core.Types.ECombatantId.Opponent)
                     {
@@ -294,16 +325,10 @@ namespace BazaarEventLogger
                         _playerCards.Remove(disposed.InstanceId);
                         _opponentCards.Remove(disposed.InstanceId);
                     }
-                    else if (evt is GameSimEventCardMoved moved)
-                    {
-                        // If card moved out of hand, remove from tracking
-                        var info = CardDatabase.GetInfo(moved.InstanceId);
-                        var type = info?.Type ?? "";
-                        var isTriggeredSupport = string.Equals(type, "Skill", StringComparison.OrdinalIgnoreCase) ||
-                                                 string.Equals(type, "PlayerEffect", StringComparison.OrdinalIgnoreCase);
-                        if (!isTriggeredSupport && moved.ToInventory != BazaarGameShared.Domain.Core.Types.EInventorySection.Hand)
-                            _playerCards.Remove(moved.InstanceId);
-                    }
+                    // NOTE: CardMoved events are NOT used to remove cards.
+                    // During state transitions the game fires CardMoved with
+                    // ToInventory != Hand even though cards are still on the
+                    // board.  Rely on CardDisposed/CardSold for removal.
                     else if (evt is GameSimEventCardSold sold)
                     {
                         _playerCards.Remove(sold.InstanceId);

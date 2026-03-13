@@ -50,11 +50,11 @@ namespace BazaarEventLogger
                 {
                     var info = CardDatabase.GetInfo(card.InstanceId);
                     var type = info?.Type ?? "";
-                    var isTriggeredSupport = string.Equals(type, "Skill", StringComparison.OrdinalIgnoreCase) ||
-                                             string.Equals(type, "PlayerEffect", StringComparison.OrdinalIgnoreCase);
-                    if (card == null ||
-                        card.State != ECardState.Alive ||
-                        (!isTriggeredSupport && card.Placement?.Section != EInventorySection.Hand))
+                    // Cards are pre-filtered by AccumulatePlayerState (Owner=Player,
+                    // Section=Hand or Skill/PlayerEffect).  Do NOT re-check
+                    // Placement.Section here — the card object is a reference that
+                    // the game engine may have mutated since accumulation.
+                    if (card.State != ECardState.Alive)
                     {
                         continue;
                     }
