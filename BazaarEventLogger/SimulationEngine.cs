@@ -325,7 +325,9 @@ namespace BazaarEventLogger
                 case "modify_HealthRegen":
                     foreach (var combatant in targetCombatants)
                     {
-                        combatant.HealthRegen += resolvedValue;
+                        combatant.HealthRegen = effect.IsMultiply
+                            ? combatant.HealthRegen * resolvedValue
+                            : combatant.HealthRegen + resolvedValue;
                         events?.Add($"{effectLabel}:{combatant.Name}:regen={combatant.HealthRegen}");
                     }
                     break;
@@ -333,8 +335,16 @@ namespace BazaarEventLogger
                 case "modify_HealthMax":
                     foreach (var combatant in targetCombatants)
                     {
-                        combatant.HealthMax = Math.Max(1, combatant.HealthMax + resolvedValue);
-                        combatant.Health = Math.Min(combatant.HealthMax, combatant.Health + resolvedValue);
+                        if (effect.IsMultiply)
+                        {
+                            combatant.HealthMax = Math.Max(1, combatant.HealthMax * resolvedValue);
+                            combatant.Health = Math.Min(combatant.HealthMax, combatant.Health);
+                        }
+                        else
+                        {
+                            combatant.HealthMax = Math.Max(1, combatant.HealthMax + resolvedValue);
+                            combatant.Health = Math.Min(combatant.HealthMax, combatant.Health + resolvedValue);
+                        }
                         events?.Add($"{effectLabel}:{combatant.Name}:hp={combatant.Health}/{combatant.HealthMax}");
                     }
                     break;
@@ -405,7 +415,7 @@ namespace BazaarEventLogger
                     {
                         foreach (var combatant in targetCombatants)
                         {
-                            ApplyCombatantAttributeModification(combatant, effect.Type.Substring("modify_".Length), resolvedValue);
+                            ApplyCombatantAttributeModification(combatant, effect.Type.Substring("modify_".Length), resolvedValue, effect.IsMultiply);
                             events?.Add($"{effectLabel}:{combatant.Name}");
                         }
                     }
@@ -428,8 +438,37 @@ namespace BazaarEventLogger
 
             foreach (var card in SelectBuffTargets(selected, attrName, rng, effect.Target))
             {
-                card.Attributes[attrName] = card.Attributes.TryGetValue(attrName, out var current)
-                    ? current + resolvedValue
+                if (effect.IsMultiply)
+                {
+                    var current = card.Attributes.TryGetValue(attrName, out var cur) ? cur : 0;
+                    var newValue = current * resolvedValue;
+                    card.Attributes[attrName] = newValue;
+                    var delta = newValue - current;
+                    var effectType = GetEffectTypeForAttribute(attrName);
+                    if (effectType != null)
+                        AdjustEffectValue(card, effectType, delta);
+
+                    switch (attrName)
+                    {
+                        case "Multicast":
+                            card.Multicast = Math.Max(1, newValue);
+                            break;
+                        case "AmmoMax":
+                            card.AmmoMax = Math.Max(0, newValue);
+                            card.CurrentAmmo = Math.Min(card.CurrentAmmo, card.AmmoMax);
+                            break;
+                        case "Cooldown":
+                        case "CooldownMax":
+                            card.CooldownMax = Math.Max(250, newValue);
+                            card.CurrentCooldown = Math.Min(card.CurrentCooldown, GetEffectiveCooldownMax(card));
+                            break;
+                    }
+
+                    continue;
+                }
+
+                card.Attributes[attrName] = card.Attributes.TryGetValue(attrName, out var current2)
+                    ? current2 + resolvedValue
                     : resolvedValue;
 
                 switch (attrName)
@@ -1113,7 +1152,8 @@ namespace BazaarEventLogger
                         DynamicCountExcludeSource = effect.DynamicCountExcludeSource,
                         DynamicValueSign = effect.DynamicValueSign,
                         TargetCount = effect.TargetCount,
-                        UseTriggerSourceForTargeting = effect.UseTriggerSourceForTargeting
+                        UseTriggerSourceForTargeting = effect.UseTriggerSourceForTargeting,
+                        IsMultiply = effect.IsMultiply
                     }).ToList()
                 }).ToList()
             };
@@ -1445,28 +1485,28 @@ namespace BazaarEventLogger
             return filtered.Count();
         }
 
-        private static void ApplyCombatantAttributeModification(SimCombatantSnapshot target, string attrName, int value)
+        private static void ApplyCombatantAttributeModification(SimCombatantSnapshot target, string attrName, int value, bool isMultiply = false)
         {
             switch (attrName)
             {
                 case "Shield":
-                    target.Shield = Math.Max(0, target.Shield + value);
+                    target.Shield = Math.Max(0, isMultiply ? target.Shield * value : target.Shield + value);
                     break;
                 case "Burn":
-                    target.Burn = Math.Max(0, target.Burn + value);
+                    target.Burn = Math.Max(0, isMultiply ? target.Burn * value : target.Burn + value);
                     break;
                 case "Poison":
-                    target.Poison = Math.Max(0, target.Poison + value);
+                    target.Poison = Math.Max(0, isMultiply ? target.Poison * value : target.Poison + value);
                     break;
                 case "RageMax":
-                    target.RageMax = Math.Max(0, target.RageMax + value);
+                    target.RageMax = Math.Max(0, isMultiply ? target.RageMax * value : target.RageMax + value);
                     target.Rage = Math.Min(target.Rage, target.RageMax);
                     break;
                 case "EnragedDuration":
-                    target.EnragedDuration = Math.Max(0, target.EnragedDuration + value);
+                    target.EnragedDuration = Math.Max(0, isMultiply ? target.EnragedDuration * value : target.EnragedDuration + value);
                     break;
                 case "EnragedDurationMax":
-                    target.EnragedDurationMax = Math.Max(0, target.EnragedDurationMax + value);
+                    target.EnragedDurationMax = Math.Max(0, isMultiply ? target.EnragedDurationMax * value : target.EnragedDurationMax + value);
                     target.EnragedDuration = Math.Min(target.EnragedDuration, target.EnragedDurationMax);
                     break;
                 case "Enraged":

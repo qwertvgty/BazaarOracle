@@ -233,6 +233,7 @@ namespace BazaarEventLogger.Tests
                 foreach (var effect in profile.Effects)
                 {
                     var parts = new List<string> { $"{effect.Type}={effect.Value}->{effect.Target}" };
+                    if (effect.IsMultiply) parts.Add("MULTIPLY");
                     if (effect.IsPassive) parts.Add("passive");
                     if (effect.Trigger != SimEffectTriggers.OnCardFired) parts.Add($"trigger={effect.Trigger}");
                     if (!string.IsNullOrEmpty(effect.DynamicValueSourceAttribute)) parts.Add($"dynVal={effect.DynamicValueSourceAttribute}");
@@ -427,6 +428,7 @@ namespace BazaarEventLogger.Tests
             TestAllTargetBuffAppliesToEveryCard();
             TestPlayerAttributeModificationCanStripShield();
             TestJsonlWriterProducesValidOutput();
+            TestMultiplyBuffTriplesDamage();
         }
 
         private static void TestDeterministicDamageRace()
@@ -996,6 +998,42 @@ namespace BazaarEventLogger.Tests
                 entry.Summary.Contains("Delay Test:haste=1000->right_self_card", StringComparison.Ordinal));
             Assert(delayedTick != null, "Expected delayed item-used effect to resolve on a later tick.");
             Assert(delayedTick.TimeMs == triggerTick.TimeMs + 50, $"Expected delayed item-used effect on next tick. Trigger={triggerTick.TimeMs}, delayed={delayedTick.TimeMs}");
+        }
+
+        private static void TestMultiplyBuffTriplesDamage()
+        {
+            // Simulates Silver Stake's aura: DamageAmount *= 3 (passive)
+            var stake = NewWeaponCard("Silver Stake", 4000, "damage", 10);
+            stake.Attributes = new Dictionary<string, int>
+            {
+                ["DamageAmount"] = 10,
+                ["Custom_0"] = 3
+            };
+            stake.Effects.Add(new SimEffectSpec
+            {
+                Type = "buff_DamageAmount",
+                Value = 3,
+                Target = "self_card",
+                IsPassive = true,
+                IsMultiply = true,
+                Trigger = SimEffectTriggers.Passive
+            });
+
+            var player = NewCombatant("Player", 100, stake);
+            var opponent = NewCombatant("Opponent", 100, NewWeaponCard("Dummy", 999999, "damage", 1));
+
+            var result = SimulationEngine.RunOnce(player, opponent, 7);
+
+            // After passive multiply: DamageAmount=10*3=30, so effect.Value should be 30
+            var firstTrigger = result.Trace.FirstOrDefault(entry =>
+                entry.Events.Any(evt => evt.Contains("Player:trigger:Silver Stake")));
+            Assert(firstTrigger != null, "Expected Silver Stake to trigger.");
+
+            // Check the damage event shows 30 damage (10 * 3), not 13 (10 + 3)
+            var damageEvent = firstTrigger.Events.FirstOrDefault(evt =>
+                evt.Contains("Silver Stake:damage=") && evt.Contains("->opponent"));
+            Assert(damageEvent != null, $"Expected damage event from Silver Stake. Events: {string.Join("; ", firstTrigger.Events)}");
+            Assert(damageEvent.Contains("damage=30->"), $"Expected 30 damage (10*3) from multiply aura, not additive. Actual: {damageEvent}");
         }
 
         private static SimCombatantSnapshot NewCombatant(string name, int health, params SimCardSnapshot[] cards)

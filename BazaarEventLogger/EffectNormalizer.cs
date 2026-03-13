@@ -319,11 +319,14 @@ namespace BazaarEventLogger
                 value = ResolveActionValue(action, attrs, attrType, 0);
             var operation = action["Operation"]?.ToString();
 
-            var isUnsupportedOp = !string.IsNullOrEmpty(operation) &&
+            var isMultiply = string.Equals(operation, "Multiply", StringComparison.OrdinalIgnoreCase);
+            var isUnsupportedOp = !isMultiply &&
+                                  !string.IsNullOrEmpty(operation) &&
                                   !string.Equals(operation, "Add", StringComparison.OrdinalIgnoreCase) &&
                                   !string.Equals(operation, "Subtract", StringComparison.OrdinalIgnoreCase);
 
-            value = ApplyOperationSign(value, operation);
+            if (!isMultiply)
+                value = ApplyOperationSign(value, operation);
 
             SimEffectSpec effect;
             switch (attrType)
@@ -387,6 +390,9 @@ namespace BazaarEventLogger
                     break;
             }
 
+            if (isMultiply && effect != null)
+                effect.IsMultiply = true;
+
             if (isUnsupportedOp && effect != null)
                 effect.OperationWarning = $"op:{operation}({attrType})_treated_as_Add";
 
@@ -412,11 +418,14 @@ namespace BazaarEventLogger
                     actionType);
             }
 
-            var isUnsupportedOp = !string.IsNullOrEmpty(operation) &&
+            var isMultiply = string.Equals(operation, "Multiply", StringComparison.OrdinalIgnoreCase);
+            var isUnsupportedOp = !isMultiply &&
+                                  !string.IsNullOrEmpty(operation) &&
                                   !string.Equals(operation, "Add", StringComparison.OrdinalIgnoreCase) &&
                                   !string.Equals(operation, "Subtract", StringComparison.OrdinalIgnoreCase);
 
-            value = ApplyOperationSign(value, operation);
+            if (!isMultiply)
+                value = ApplyOperationSign(value, operation);
 
             SimEffectSpec effect;
             switch (attrType)
@@ -442,6 +451,9 @@ namespace BazaarEventLogger
                     effect = FinalizeEffectTargeting(BuildEffectWithDynamicValue($"buff_{attrType}", value, GetTargetMode(action["Target"] as JObject, "self_card"), actionType, valueObj, operation), action, attrs);
                     break;
             }
+
+            if (isMultiply && effect != null)
+                effect.IsMultiply = true;
 
             if (isUnsupportedOp && effect != null)
                 effect.OperationWarning = $"op:{operation}({attrType})_treated_as_Add";
