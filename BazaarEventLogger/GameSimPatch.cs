@@ -303,6 +303,15 @@ namespace BazaarEventLogger
                     var isPlayerHandByEvent = !string.IsNullOrWhiteSpace(instanceId) &&
                                               playerHandInstancesFromEvents.Contains(instanceId);
 
+                    if (!isTriggeredSupport &&
+                        card.Placement?.Owner == BazaarGameShared.Domain.Core.Types.ECombatantId.Player &&
+                        card.Placement?.Section == BazaarGameShared.Domain.Core.Types.EInventorySection.Stash)
+                    {
+                        // Do not include backpack/stash items in simulation snapshots.
+                        _playerCards.Remove(kvp.Key);
+                        continue;
+                    }
+
                     if (card.Placement?.Owner == BazaarGameShared.Domain.Core.Types.ECombatantId.Player &&
                         (card.Placement?.Section == BazaarGameShared.Domain.Core.Types.EInventorySection.Hand || isTriggeredSupport))
                     {
